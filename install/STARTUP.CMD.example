@@ -1,0 +1,4 @@
+@echo off
+rem STARTUP.CMD - Wireless LAN Monitor variant: the monitor (XWLAN) runs wpa_supplicant itself,
+rem so only the address helper is started here (it waits until lan1 is connected).
+detach C:\OS2\CMD.EXE /c C:\IBMCOM\RTL88EU\rtl88eu_ip.cmd

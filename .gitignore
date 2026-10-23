@@ -1,0 +1,11 @@
+# build products inside src/ (the shipped binary lives in bin/)
+src/*.obj
+src/*.OBJ
+src/*.map
+src/*.log
+src/RTL88EU.OS2
+src/build.log
+# editor and backup leftovers
+*.bak
+*.tmp
+*~

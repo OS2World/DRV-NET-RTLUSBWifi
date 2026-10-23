@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: GPL-2.0-only
+format os2 dll
+name RTL88EU.OS2
+option quiet,map=RTL88EU.map,verbose,caseexact,eliminate,nodefaultlibs
+option description '@#RTL88EU-OS2:0.1.2#@##1## 21 Oct 2026 12:00:00     ARCAOS-DEV::en:US:2:::@@Realtek RTL8188EU USB WiFi driver for OS/2 and ArcaOS (GenMAC + NDIS)'
+segment class 'CODE' iopl
+import DOSOPEN DOSCALLS.70
+import DOSCLOSE DOSCALLS.59
+import DOSREAD DOSCALLS.137
+import DOSDEVIOCTL DOSCALLS.53
+file rt_hdr.obj
+file rt_lib.obj
+file rt_ndisx.obj
+file rt_strat.obj
+file rt_usb.obj
+file rt_ndis.obj
+file fwdl.obj
+file fwimg.obj
+file rtl_init.obj
+file rtl_mac.obj
+file rtl_bb.obj
+file rtl_rf.obj
+file rtl_iqk.obj
+file rtl_nic.obj
+file rtl_dhcp.obj
+file rtl_dbg.obj
+file rtl_rx.obj
+file rtw_reg.obj
+file rt_end.obj
