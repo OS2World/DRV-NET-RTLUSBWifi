@@ -121,6 +121,10 @@ static struct CommonChars   gProtCCT;
 static struct ProtLowerDisp gProtLDT;
 static USHORT               g_ndis_reg;          /* registered with the Protocol Manager */
 static USHORT               g_txsel;             /* GDT selector for physical TransmitChain blocks */
+static ULONG                g_hook;              /* context hook that delivers received frames at task time */
+static USHORT               g_hook_ok;           /* 1 when the hook was allocated */
+USHORT                      g_use_hook = 1;      /* 1 = deliver received frames from the context hook (debug "uh 1"), 0 = directly from the USB callback */
+USHORT                      g_hk_run, g_hk_maxq, g_hk_arm_fail;
 
 /* ---- registration with the Protocol Manager (init time) ---------------------- */
 USHORT ndis_init(void)
@@ -132,6 +136,7 @@ USHORT ndis_init(void)
 
    gCCT.moduleDS = rt_getds();
    rt_dh_alloc_gdt(&g_txsel, 1);                   /* used to read physical TransmitChain data blocks */
+   g_hook_ok = (USHORT)(rt_dh_alloc_ctxhook(rt_hook_offset(), &g_hook) == 0);   /* receive delivery at task time */
    for (i = 0; i < 6; i++)
       gSCT.permStnAddr[i] = gSCT.currStnAddr[i] = g_mymac[i];
 
@@ -163,22 +168,53 @@ WORD ndis_is_open(void)
 #define RXP_SIZE  1520
 static UCHAR            g_rxp[RXP_N][RXP_SIZE];
 static UCHAR            g_rxp_busy[RXP_N];
-static struct RCBufferD g_rcb;
+static struct RCBufferD g_rcb[RXP_N];           /* one descriptor per buffer: a protocol that answers WAIT_FOR_RELEASE may still look at it from another CPU */
 static BYTE             g_indicate;
-static UCHAR            g_txg[RXP_SIZE];            /* gather buffer for one outgoing frame */
+static USHORT           g_txsel_lock;               /* owner (CPU + 1) of g_txsel while a physical block is copied */
 
 /* Indication exclusion (NDIS 2.0.1, IndicationOff/IndicationOn). The protocol brackets its own critical sections
  * with IndicationOff ... IndicationOn and expects no indication to be running, or to start, in between ("similar in
  * concept to disabling interrupts"). Our indications come from the USB completion on whatever CPU USBD uses, so on
  * an SMP kernel disabling the local interrupts is not enough:
- *   g_ind_off  nesting count of IndicationOff calls (and of an indication left disabled by the protocol);
- *   g_ind_busy set while one of our indication upcalls is in progress.
- * The two sides are ordered with locked instructions (Dekker): the receiver takes g_ind_busy and then looks at
- * g_ind_off; IndicationOff raises g_ind_off and then waits for g_ind_busy to drop. The wait is bounded, because the
- * protocol may legally call IndicationOff from inside our own upcall (it must pair it with IndicationOn). */
+ *   g_ind_off    nesting count of IndicationOff calls (and of an indication left disabled by the protocol);
+ *   g_ind_owner  0, or (CPU id + 1) of the CPU whose indication upcall is in progress.
+ * The two sides are ordered with locked instructions (Dekker): the receiver takes g_ind_owner and then looks at
+ * g_ind_off; IndicationOff raises g_ind_off and then waits for g_ind_owner to drop. The protocol may legally call
+ * IndicationOff from inside our own upcall: that case is recognised by the owner being the calling CPU, so the wait
+ * for a DIFFERENT CPU does not need a short bound (an earlier version gave up after 65535 passes, a few tens of
+ * microseconds: shorter than an indication into TCP/IP, so the protocol's critical section could overlap a running
+ * indication). A wait that still runs out is counted (INDTMO) and marked with '%' on COM1. */
 static USHORT           g_ind_off;
-static UCHAR            g_ind_busy;
-#define IND_SPIN_MAX    0xFFFFU
+USHORT                  g_rel_n, g_rel_avg8, g_rel_max, g_rc_wait, g_rc_succ, g_rc_other;   /* ReceiveRelease: count, delay after the indication (ms, avg x8, max); how ReceiveChain returned */
+static ULONG            g_rxp_t0[6];
+USHORT                  g_if_on, g_if_off, g_ind_cli;   /* interrupt flag when an indication starts; 1 = call the protocol with interrupts disabled
+ */
+USHORT                  g_rc_n, g_rc_avg8, g_rc_max, g_rc_slow;   /* ReceiveChain + IndicationComplete: calls, duration average x8 / maximum (ms), calls over 5 ms */
+/* What ReceiveChain returned when it was neither SUCCESS nor WAIT_FOR_RELEASE: up to 4 distinct status values with their
+ * counts, and the last such frame (length, ethertype, IP protocol, destination address last byte). */
+static USHORT           g_rcv[4], g_rcc[4], g_rc_last, g_rc_len, g_rc_et, g_rc_ipp, g_rc_dst;
+USHORT                  g_ind_drop_busy, g_ind_drop_off;   /* frames dropped because an indication was running / the protocol had indications off */
+static USHORT           g_ind_owner;
+#define IND_WAIT_ROUNDS 16                          /* x 65536 PAUSE passes: tens of milliseconds at most */
+static USHORT           g_ind_tmo, g_ind_reent, g_cpu_rx;   /* g_cpu_rx: bit n set = an indication ran on the CPU with APIC id n (mod 16) */
+
+/* Diagnostics: 0 IndicationOff waits that ran out, 1 IndicationOff calls from inside our own upcall,
+ * 2 received frames dropped because indications were off or busy. */
+USHORT ndis_diag(USHORT i)
+{
+   if (i == 0) return g_ind_tmo;
+   if (i == 1) return g_ind_reent;
+   if (i == 2) return (USHORT)(g_ind_drop_busy + g_ind_drop_off);
+   if (i == 3) return g_cpu_rx;
+   if (i >= 4 && i <= 7) return g_rcv[i - 4];
+   if (i >= 8 && i <= 11) return g_rcc[i - 8];
+   if (i == 12) return g_rc_last;
+   if (i == 13) return g_rc_len;
+   if (i == 14) return g_rc_et;
+   if (i == 15) return g_rc_ipp;
+   if (i == 16) return g_rc_dst;
+   return 0xFFFF;
+}
 
 UCHAR *ndis_rx_get(USHORT *handle)
 {
@@ -194,21 +230,29 @@ UCHAR *ndis_rx_get(USHORT *handle)
    return 0;
 }
 
-void ndis_rx_put(USHORT h, USHORT len)
+static void deliver(USHORT h, USHORT len)
 {
    WORD   rc;
    UCHAR *d = g_rxp[h];
+   struct RCBufferD *rcb = &g_rcb[h];
+   ULONG  rc_t0;
+   UCHAR  usecli;
+   USHORT cid;
 
    if (!(gSST.status & SSTATUS_BOUND) || gSST.filter == 0) {
       g_rxp_busy[h] = 0;                           /* nobody listening: drop */
       return;
    }
-   if (rt_tas(&g_ind_busy)) {                      /* an indication is already running */
+   cid = (USHORT)(rt_cpu_id() + 1);
+   g_cpu_rx |= (USHORT)(1U << ((cid - 1) & 15));
+   if (rt_lock_try(&g_ind_owner, cid)) {   /* an indication is already running */
+      g_ind_drop_busy++;
       g_rxp_busy[h] = 0;
       return;
    }
    if (g_ind_off != 0) {                           /* the protocol has indications off: drop (TCP recovers) */
-      g_ind_busy = 0;
+      rt_lock_release(&g_ind_owner);
+      g_ind_drop_off++;
       g_rxp_busy[h] = 0;
       return;
    }
@@ -220,19 +264,56 @@ void ndis_rx_put(USHORT h, USHORT len)
       else
          gSST.recMCFrames++;
    }
-   g_rcb.dbCount        = 1;
-   g_rcb.db[0].dataLen  = len;
-   g_rcb.db[0].pData    = (PBYTE)d;
+   rcb->dbCount         = 1;
+   rcb->db[0].dataLen   = len;
+   rcb->db[0].pData     = (PBYTE)d;
    g_indicate           = 0xFF;
    rt_atomic_inc(&g_ind_off);                      /* implicitly disable indications while the protocol looks */
-   rc = (*gProtLDT.pReceiveChain)(gCCT.moduleID, len, (WORD)(h + 1), (PRCBD)&g_rcb, (PBYTE)&g_indicate,
+   {
+      USHORT ifl = rt_getif();
+
+      if (ifl) g_if_on++; else g_if_off++;
+      usecli = (UCHAR)(g_ind_cli && ifl);
+   }
+   if (usecli)
+      rt_cli();
+   rc_t0 = rtl8188eu_ms();
+   rc = (*gProtLDT.pReceiveChain)(gCCT.moduleID, len, (WORD)(h + 1), (PRCBD)rcb, (PBYTE)&g_indicate,
                                   gProtCCT.moduleDS);
    if (g_indicate)                                 /* the protocol left the flag set: indications back on; cleared: they stay off */
-      rt_atomic_dec(&g_ind_off);
+      rt_atomic_dec_nz(&g_ind_off);
+   if (rc == NDIS_WAIT_FOR_RELEASE) { g_rc_wait++; g_rxp_t0[h] = rc_t0; }
+   else if (rc == NDIS_SUCCESS)     g_rc_succ++;
+   else {
+      USHORT q;
+
+      g_rc_other++;
+      g_rc_last = rc;
+      g_rc_len  = len;
+      g_rc_et   = (USHORT)((d[12] << 8) | d[13]);
+      g_rc_ipp  = (USHORT)(len > 23 ? d[23] : 0);
+      g_rc_dst  = d[5];
+      for (q = 0; q < 4; q++)
+         if (g_rcc[q] == 0 || g_rcv[q] == rc) {
+            g_rcv[q] = rc;
+            g_rcc[q]++;
+            break;
+         }
+   }
    if (rc != NDIS_WAIT_FOR_RELEASE)
       g_rxp_busy[h] = 0;
    (*gProtLDT.pIndicationComplete)(gCCT.moduleID, gProtCCT.moduleDS);
-   g_ind_busy = 0;
+   if (usecli)
+      rt_sti();
+   {
+      USHORT dt = (USHORT)(rtl8188eu_ms() - rc_t0);
+
+      g_rc_n++;
+      g_rc_avg8 = (USHORT)(g_rc_avg8 - (g_rc_avg8 >> 3) + dt);
+      if (dt > g_rc_max) g_rc_max = dt;
+      if (dt > 5) g_rc_slow++;
+   }
+   rt_lock_release(&g_ind_owner);
 }
 
 /* ---- NDIS entry points (DS is the driver's on entry: loaded by the stubs) ------------------------- */
@@ -312,41 +393,68 @@ WORD __cdecl ndis_c_genreq(WORD protID, WORD reqHandle, WORD param1, DWORD param
 WORD __cdecl ndis_c_transmit(WORD protID, WORD reqHandle, PTCBD pTCBufferD)
 {
    WORD   rc = NDIS_SUCCESS;
-   USHORT n = 0, i, k;
-   int    r;
+   USHORT n = 0, i, k, slot, fl;
+   UCHAR  *g, mc;
+   int    r, bad = 0;
 
-   if (!(gSST.status & SSTATUS_OPEN)) {
-      rc = NDIS_INVALID_FUNCTION;
-   } else {
-      if (pTCBufferD->immedLen && pTCBufferD->immedLen <= RXP_SIZE) {
-         rt_movmem((PVOID)g_txg, (PVOID)pTCBufferD->pImmed, pTCBufferD->immedLen);
+   if (!(gSST.status & SSTATUS_OPEN))
+      return NDIS_INVALID_FUNCTION;
+   if (!rtl8188eu_tx_ready()) {
+      gSST.trFrHW++;                                     /* no connection / keys yet: the frame is lost */
+      return NDIS_SUCCESS;
+   }
+   slot = rtl8188eu_ndis_slot();
+   if (slot == 0xFFFF)
+      return NDIS_OUT_OF_RESOURCE;                       /* all transmit slots busy: protocol retries */
+   g = usb_tx_buf(slot) + TX_ETH_OFF;
+   if (pTCBufferD->immedLen) {
+      if (pTCBufferD->immedLen > MAX_FRAME_SIZE)
+         bad = 1;
+      else {
+         rt_movmem((PVOID)g, (PVOID)pTCBufferD->pImmed, pTCBufferD->immedLen);
          n = pTCBufferD->immedLen;
       }
-      for (i = 0; i < pTCBufferD->dbCount && i < MAX_DATA_BLOCK_COUNT; i++) {
-         k = pTCBufferD->db[i].dataLen;
-         if ((USHORT)(n + k) > RXP_SIZE || (USHORT)(n + k) < n)
-            break;
-         if (pTCBufferD->db[i].ptrType == 0) {         /* physical address: map it through our GDT selector */
-            ULONG ph = *(ULONG FAR *)&pTCBufferD->db[i].pData;
+   }
+   for (i = 0; !bad && i < pTCBufferD->dbCount && i < MAX_DATA_BLOCK_COUNT; i++) {
+      k = pTCBufferD->db[i].dataLen;
+      if ((USHORT)(n + k) > MAX_FRAME_SIZE || (USHORT)(n + k) < n) {
+         bad = 1;
+         break;
+      }
+      if (pTCBufferD->db[i].ptrType == 0) {            /* physical address: map it through our GDT selector */
+         ULONG ph = *(ULONG FAR *)&pTCBufferD->db[i].pData;
 
-            rt_dh_phys_to_gdt(ph, k, g_txsel);
-            rt_movmem((PVOID)(g_txg + n), MAKEP(g_txsel, 0), k);
-         } else {                                       /* GDT virtual address */
-            rt_movmem((PVOID)(g_txg + n), (PVOID)pTCBufferD->db[i].pData, k);
+         fl = rt_irq_save();
+         if (rt_lock_acquire(&g_txsel_lock, (USHORT)(rt_cpu_id() + 1))) {
+            rt_irq_restore(fl);                         /* this CPU already holds it (re-entered): do not wait */
+            bad = 1;
+            break;
          }
-         n = (USHORT)(n + k);
+         rt_dh_phys_to_gdt(ph, k, g_txsel);
+         rt_movmem((PVOID)(g + n), MAKEP(g_txsel, 0), k);
+         rt_lock_release(&g_txsel_lock);
+         rt_irq_restore(fl);
+      } else {                                          /* GDT virtual address */
+         rt_movmem((PVOID)(g + n), (PVOID)pTCBufferD->db[i].pData, k);
       }
-      r = rtl8188eu_ndis_tx(g_txg, n);
-      if (r == 0) {
-         gSST.trFrames++;
-         gSST.trBytes += n;
-         if (g_txg[0] & STATION_ADDR_MC)
-            gSST.trBCFrames++;
-      } else if (r == -2) {
-         rc = NDIS_OUT_OF_RESOURCE;                      /* all transmit slots busy: protocol retries */
-      } else {
-         gSST.trFrHW++;                                  /* no connection / keys yet: the frame is lost */
-      }
+      n = (USHORT)(n + k);
+   }
+   if (bad) {
+      usb_tx_release(slot);
+      gSST.trFrHW++;                                     /* larger than an Ethernet frame (or re-entered): lost */
+      return NDIS_SUCCESS;
+   }
+   mc = (UCHAR)(g[0] & STATION_ADDR_MC);                 /* the slot is rewritten by the send: keep the group bit */
+   r = rtl8188eu_ndis_tx_slot(slot, n);                  /* releases the slot itself when it fails */
+   if (r == 0) {
+      gSST.trFrames++;
+      gSST.trBytes += n;
+      if (mc)
+         gSST.trBCFrames++;
+   } else if (r == -2) {
+      rc = NDIS_OUT_OF_RESOURCE;                         /* could not be queued now: protocol retries */
+   } else {
+      gSST.trFrHW++;
    }
    return rc;
 }
@@ -360,6 +468,11 @@ WORD __cdecl ndis_c_transfer(PUSHORT pBytesCopied, WORD frameOffset, PTDBD pTDBu
 WORD __cdecl ndis_c_release(WORD reqHandle)
 {
    if (reqHandle >= 1 && reqHandle <= RXP_N) {
+      USHORT dt = (USHORT)(rtl8188eu_ms() - g_rxp_t0[reqHandle - 1]);
+
+      g_rel_n++;
+      g_rel_avg8 = (USHORT)(g_rel_avg8 - (g_rel_avg8 >> 3) + dt);
+      if (dt > g_rel_max) g_rel_max = dt;
       g_rxp_busy[reqHandle - 1] = 0;
       return NDIS_SUCCESS;
    }
@@ -369,19 +482,30 @@ WORD __cdecl ndis_c_release(WORD reqHandle)
 /* NDIS 2.0.1: both calls return with interrupts disabled; the caller re-enables them. */
 WORD __cdecl ndis_c_indoff(void)
 {
-   USHORT n = 0;
+   USHORT own;
 
    rt_cli();
    rt_atomic_inc(&g_ind_off);
-   while (g_ind_busy && ++n < IND_SPIN_MAX)        /* let an indication in progress on another CPU finish */
-      ;
+   own = g_ind_owner;                              /* read after the locked increment (Dekker, see above) */
+   if (own != 0) {
+      if (own == (USHORT)(rt_cpu_id() + 1))
+         g_ind_reent++;                            /* called from inside our own upcall: never wait for ourselves */
+      else if (rt_wait_zero(&g_ind_owner, IND_WAIT_ROUNDS)) {
+         g_ind_tmo++;                              /* the indication on the other CPU is still running */
+         tcom_always('%');
+      }
+   }
    return NDIS_SUCCESS;
 }
 
+static USHORT g_q_head, g_q_tail;                 /* delivery queue (see ndis_rx_put) */
+static void arm_hook(void);
+
 WORD __cdecl ndis_c_indon(void)
 {
-   if (g_ind_off)
-      rt_atomic_dec(&g_ind_off);
+   rt_atomic_dec_nz(&g_ind_off);                   /* one atomic step: two CPUs must not both pass a "> 0" test */
+   if (g_hook_ok && g_use_hook && g_ind_off == 0 && g_q_tail != g_q_head)
+      arm_hook();                                   /* frames were held back while indications were off */
    rt_cli();
    return NDIS_SUCCESS;
 }
@@ -406,6 +530,54 @@ int ndis_set_mac(UCHAR *m)
       g_mymac[i] = m[i];
    }
    return 0;
+}
+
+/* Delivery from the context hook: the frame is queued by the USB completion callback and the hook runs the protocol's
+ * receive upcall at task time (the way other USB network drivers do it). */
+static UCHAR  g_q_h[RXP_N];
+static USHORT g_q_len[RXP_N];
+
+void __cdecl ndis_hook_c(void)
+{
+   g_hk_run++;
+   while (g_q_tail != g_q_head) {
+      USHORT i = (USHORT)(g_q_tail % RXP_N), h, len;
+
+      if (g_ind_off != 0)                          /* the protocol has indications off: IndicationOn re-arms us */
+         return;
+      h   = g_q_h[i];
+      len = g_q_len[i];
+      g_q_tail++;
+      deliver(h, len);
+   }
+}
+
+static void arm_hook(void)
+{
+   if (rt_dh_arm_ctxhook(0UL, g_hook) != 0)
+      g_hk_arm_fail++;                              /* already armed: it will run and find the frame */
+}
+
+void ndis_rx_put(USHORT h, USHORT len)
+{
+   if (!g_hook_ok || !g_use_hook) {
+      deliver(h, len);
+      return;
+   }
+   if (!(gSST.status & SSTATUS_BOUND) || gSST.filter == 0) {
+      g_rxp_busy[h] = 0;
+      return;
+   }
+   g_q_h[g_q_head % RXP_N]   = (UCHAR)h;
+   g_q_len[g_q_head % RXP_N] = len;
+   rt_atomic_inc(&g_q_head);                        /* publish the entry (locked instruction = barrier) */
+   {
+      USHORT q = (USHORT)(g_q_head - g_q_tail);
+
+      if (q > g_hk_maxq)
+         g_hk_maxq = q;
+   }
+   arm_hook();
 }
 
 /* Give back a receive buffer that was filled but is not to be indicated (e.g. a DHCP reply). */

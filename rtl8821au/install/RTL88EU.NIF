@@ -1,0 +1,10 @@
+[RTL88EU]
+Type = NDIS
+Title = "Realtek RTL8821AU USB WLAN (OS/2 native)"
+Version = 0.1
+DriverName = WRND32$
+Xports = NETBEUI, LANDD
+
+[File]
+Name = RTL8821AU.OS2
+Path = IBMCOM\MACS

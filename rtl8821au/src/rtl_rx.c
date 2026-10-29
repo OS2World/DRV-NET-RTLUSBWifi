@@ -51,6 +51,7 @@
  * MP-test PHY regdef (rtw_mp_phy_regdef.h), NOT the MAC RCR, so management
  * frames were never accepted and every beacon was filtered out by the MAC. */
 #define RX_RCR         0x1000280FUL   /* AAP|APM|AM|AB + ADF + AMF(mgmt) + APP_PHYST_RXFF; NO CRC/ICV-error frames */
+#define RX_RCR_LINKED  0x100028CEUL   /* as RX_RCR, but only frames of our BSS (CBSSID_DATA | CBSSID_BCN) and no promiscuous mode */
 #define CR_MACTXRXEN   0x00C0         /* MACTXEN|MACRXEN (BIT6|BIT7)             */
 
 /* One LLT entry write (_LLTWrite): value = data | (addr<<8) | (WRITE_ACCESS<<30).
@@ -205,17 +206,6 @@ static UCHAR find_bulk_in_ep(usb_dev_t *dev)
    return 1;                                   /* fallback: EP1               */
 }
 
-/* RF reg 0x18 (RF_CHNLBW) for a 20 MHz channel = 0xC00 | channel (bits[11:10] =
- * 11). The RF table leaves 0x0F407, i.e. BW bits = 01 = the 40 MHz filter; the
- * stock driver sets 0xC00 via PHY_SetBWMode -> rtl8188e_PHY_RF6052SetBandwidth
- * (rtl8188e_rf6052.c:113) and the Windows driver runs 0x00C00|ch (USBPcap
- * capture). We never made that call. Written over path-A LSSI 0x840 as
- * (0x18<<20) | value. */
-static void rf_tune20(usb_dev_t *dev, USHORT ch)
-{
-   rtw_write32(dev, 0x0840, 0x01800C00UL | (ULONG)ch);
-}
-
 /* PHY-error delta over a dwell (RXERR_RPT 0x664) + good-frame count (0x284). */
 static USHORT g_e0, g_e1, g_pk;
 static void rx_probe(usb_dev_t *dev, USHORT ms)
@@ -234,7 +224,7 @@ static void rx_print(void)
 /* ===== Scan: receive-stream reassembly + beacon parser + network list ====== */
 
 #define RXREAD   1024
-#define ACCSZ    3600
+#define ACCSZ    4000
 
 
 net_t  g_net[MAXNET];
@@ -243,12 +233,16 @@ static UCHAR  g_rxbuf[RXREAD];
 static USHORT g_rxact;
 static UCHAR  g_acc[ACCSZ];
 static USHORT g_accn;
+static UCHAR  g_acc_reset;                 /* task -> completion: drop the partial stream at the next feed. Only the
+                                            * completion touches g_acc/g_accn, which on SMP runs alongside the task. */
 static UCHAR  g_curch;
 UCHAR  g_mymac[6] = { 0x02, 0x88, 0xE0, 0x00, 0x00, 0x01 };  /* fallback (locally administered); the real MAC is read from the eFuse at init */
 static USHORT g_prme;     /* probe responses addressed to US */
 static UCHAR  g_target[6];                 /* BSSID of the AP we are associating with */
 static UCHAR  g_rx_auth, g_rx_assoc;       /* got an auth / assoc response from the target */
 static USHORT g_auth_st = 0xFFFF, g_assoc_st = 0xFFFF, g_aid, g_rx_deauth;
+static USHORT g_dc_n, g_dc_r1, g_dc_sub1, g_dc_sec1, g_dc_rl, g_dc_secl;   /* deauth / disassoc from the AP: count, first (reason, subtype, second since boot), last */
+static ULONG  udiv1000(ULONG v);
 static void tcom_str(char *s);
 static USHORT g_nfrm, g_nbcn, g_ndesync, g_dbg, g_dbg2, g_dbgc, g_dbgo, g_lastdbg, g_prevpl, g_prevtot, g_ncrc, g_npr;
 /* receive-stream diagnostics (read back through \\DEV\\WRND32$) */
@@ -325,7 +319,7 @@ static signed char rx_rssi(UCHAR *d, USHORT drv)
       }
       pw += 6;
    } else {                                      /* OFDM / HT                    */
-      pw = (int)((ph[4] >> 1) & 0x7F) - 110;           /* OFDM PWDB: byte 4 (measured: 0x65..0x82 for nearby APs) */
+      pw = (int)(ph[0] & 0x7F) - 110;                  /* OFDM: path A gain/power byte of the Jaguar PHY status (phy_status_rpt_8812.gain_trsw[0]) */
    }
    if (pw > 0) pw = 0;
    if (pw < -110) pw = -110;
@@ -339,7 +333,7 @@ static signed char rx_rssi(UCHAR *d, USHORT drv)
  * decrypt (software-decrypt flag, RX descriptor dw0 bit 27). Frames are converted to
  * Ethernet format: EAPOL goes to the supplicant's queue, everything else to the data
  * queue (consumed by the self-test now, by the NDIS front-end later). */
-#define DQN   4
+#define DQN   1
 #define DQSZ  600
 static UCHAR  g_dq[DQN][DQSZ];
 static USHORT g_dqlen[DQN];
@@ -353,6 +347,9 @@ static UCHAR  g_rxsw;
  * traffic identifier (QoS TID 0..15, 16 = non-QoS). */
 static USHORT g_sc[17];
 static USHORT g_ndup;
+static ULONG  g_icmp_t0;                            /* ms clock when the last ICMP echo request reached the protocol stack */
+static USHORT g_ntx_call, g_ntx_ok, g_ntx_nokey, g_ntx_noslot;
+static USHORT g_ntx_arp, g_ntx_tcp, g_ntx_ack, g_ntx_udp, g_ntx_icmp, g_ntx_other;   /* what the protocol stack sends: ARP / TCP / of which pure ACKs / UDP / ICMP / rest */     /* NDIS transmit path: calls, queued, refused (no join / key), no free slot */
 
 static USHORT g_led_act;                        /* set by data traffic, consumed by rtl8188eu_led_tick */
 static UCHAR  g_ptk_ok, g_gtk_ok;                    /* pairwise / group key installed on the current join */
@@ -429,9 +426,11 @@ static void rx_data_frame(UCHAR *f, USHORT len)
    if (eapol) {
       g_eqlen[g_eqt] = n;
       g_eqt = (USHORT)((g_eqt + 1) % EQN);
-      g_eqn++;
+      rt_atomic_inc(&g_eqn);                       /* the supplicant's request pops on another CPU */
       tcom_str("[eapol rx "); tcom_dec(pl); tcom(']');
    } else if (nd) {
+      if (n >= 35 && d[12] == 0x08 && d[13] == 0x00 && d[23] == 1 && d[34] == 8)
+         g_icmp_t0 = rtl8188eu_ms();               /* ICMP echo request: remember when it reached the stack */
       if (dhcp_rx(d, n))                           /* reply to the driver's own DHCP exchange */
          ndis_rx_free(nh);
       else
@@ -475,7 +474,7 @@ static void note_frame(UCHAR *f, USHORT len, signed char rssi)
       rx_data_frame(f, len);                     /* data frame from the AP (FromDS) */
       return;
    }
-   if (len >= 28 && (f[0] & 0x0C) == 0 && (f[4] & 1) == 0) {   /* mgmt, unicast: auth / assoc response, deauth */
+   if (len >= 26 && (f[0] & 0x0C) == 0 && (f[4] & 1) == 0) {   /* mgmt, unicast: auth / assoc response, deauth (a deauth is 26 bytes: the 8821 delivers frames without FCS) */
       UCHAR mine = 1, tome = 1;
       USHORT q;
       for (q = 0; q < 6; q++)
@@ -512,7 +511,17 @@ static void note_frame(UCHAR *f, USHORT len, signed char rssi)
                g_jreslen = (USHORT)(g_jreslen + 2 + f[q + 1]);
             }
          } else if (sub == 0xC0 || sub == 0xA0) {
-            g_rx_deauth = (USHORT)((f[24] | (f[25] << 8)) + 1);
+            USHORT why = (USHORT)(f[24] | (f[25] << 8));
+
+            g_rx_deauth = (USHORT)(why + 1);
+            if (g_dc_n == 0) {                                /* the first one: when and why the access point let go of us */
+               g_dc_r1 = why;
+               g_dc_sub1 = sub;
+               g_dc_sec1 = (USHORT)udiv1000(rtl8188eu_ms());
+            }
+            g_dc_n++;
+            g_dc_rl = why;
+            g_dc_secl = (USHORT)udiv1000(rtl8188eu_ms());
          }
       }
    }
@@ -613,6 +622,129 @@ static int hdr_ok(USHORT pos)
    return 1;
 }
 
+/* ---- latency / rate statistics (diagnostics only) ---------------------------------------------------------------
+ * TX report (C2H, requested with SPE_RPT on every 4th data frame): retries, time spent in the chip's queue (units of
+ * 256 us) and the final rate. RX: the rate classes the AP uses for data frames to us, and the jitter between the chip's
+ * TSF stamp of each frame and the host clock at the time the USB completion delivered it (max - min of
+ * host_ms - tsf_ms: how much the delivery path stretches and shakes the arrival times). */
+USHORT g_xr_n, g_xr_retry, g_xr_retry_max, g_xr_q8, g_xr_q_max, g_xr_rate, g_xr_over, g_xr_big;
+USHORT g_rx_cls[6];                              /* CCK, OFDM 6-12, OFDM 18-24, OFDM 36-54, HT, VHT */
+static ULONG  g_tsf0, g_host0;
+static UCHAR  g_tsf_ref;
+static long   g_dev_min, g_dev_max;
+USHORT g_dev_rng, g_dev_n;
+static ULONG g_rpt_t0;                              /* ms clock: last report-requesting frame submitted */
+USHORT g_xr_rt8, g_xr_rt_max;                       /* submit -> C2H round trip (USB out + chip + USB in): average x8, maximum, ms */
+USHORT g_icmp_n, g_icmp_avg8, g_icmp_max;           /* RX of an ICMP echo request -> TX call of the echo reply (the protocol stack), ms */
+
+/* 32 bit / 1000 by shift and subtract (the 16 bit compiler has no 32 bit divide helper) */
+static ULONG udiv1000(ULONG v)
+{
+   ULONG  q = 0, r = 0;
+   USHORT i;
+
+   for (i = 0; i < 32; i++) {
+      r = r + r;
+      if (v & 0x80000000UL) r |= 1UL;
+      v = v + v;
+      q = q + q;
+      if (r >= 1000UL) { r -= 1000UL; q |= 1UL; }
+   }
+   return q;
+}
+
+/* Log of the last unicast frames addressed to us (any type): time (ms, low 16 bits), RX rate, frame control, length
+ * (low byte), transmitter's last address byte. Shows what the access point still sends us during a stall. */
+#define ULN 20
+static USHORT g_ul_t[ULN];
+static UCHAR  g_ul_r[ULN], g_ul_f0[ULN], g_ul_f1[ULN], g_ul_len[ULN], g_ul_a2[ULN];
+USHORT g_ul_n;
+
+USHORT rtl8188eu_diag_ul_n(void)
+{
+   return g_ul_n;
+}
+
+USHORT rtl8188eu_diag_ul(USHORT n, USHORT which)
+{
+   switch (which) {
+      case 0:  return g_ul_t[n];
+      case 1:  return g_ul_r[n];
+      case 2:  return g_ul_f0[n];
+      case 3:  return g_ul_f1[n];
+      case 4:  return g_ul_len[n];
+      default: return g_ul_a2[n];
+   }
+}
+
+static void rx_stats(UCHAR *p, UCHAR *f)
+{
+   ULONG  tsf;
+   long   dev;
+   UCHAR  rate = (UCHAR)(p[12] & 0x7F);
+
+   if (!(f[4] & 1) && f[4] == g_mymac[0] && f[5] == g_mymac[1] && f[6] == g_mymac[2] &&
+       f[7] == g_mymac[3] && f[8] == g_mymac[4] && f[9] == g_mymac[5]) {
+      USHORT k = (USHORT)(g_ul_n % ULN);
+
+      g_ul_t[k]   = (USHORT)rtl8188eu_ms();
+      g_ul_r[k]   = rate;
+      g_ul_f0[k]  = f[0];
+      g_ul_f1[k]  = f[1];
+      g_ul_len[k] = p[0];
+      g_ul_a2[k]  = f[10 + 5];
+      g_ul_n++;
+   }
+
+   if ((f[0] & 0x0C) == 0x08) {                     /* data frame: rate class */
+      if (rate < 4)         g_rx_cls[0]++;
+      else if (rate <= 6)   g_rx_cls[1]++;
+      else if (rate <= 8)   g_rx_cls[2]++;
+      else if (rate <= 11)  g_rx_cls[3]++;
+      else if (rate < 0x2C) g_rx_cls[4]++;
+      else                  g_rx_cls[5]++;
+   }
+   tsf = (ULONG)p[20] | ((ULONG)p[21] << 8) | ((ULONG)p[22] << 16) | ((ULONG)p[23] << 24);
+   if (!g_tsf_ref) {
+      g_tsf0 = tsf;
+      g_host0 = rtl8188eu_ms();
+      g_tsf_ref = 1;
+      g_dev_min = 0x7FFFFFFFL;
+      g_dev_max = -0x7FFFFFFFL;
+      return;
+   }
+   dev = (long)(rtl8188eu_ms() - g_host0) - (long)udiv1000(tsf - g_tsf0);
+   if (dev < g_dev_min) g_dev_min = dev;
+   if (dev > g_dev_max) g_dev_max = dev;
+   g_dev_n++;
+   g_dev_rng = (USHORT)(g_dev_max - g_dev_min);
+}
+
+/* C2H packet: payload[0] = id, [1] = sequence, then the report. id 0x03 = TX report (CCX). */
+static void rx_c2h(UCHAR *c, USHORT n)
+{
+   USHORT retry, q;
+
+   if (n < 8 || c[0] != 0x03)
+      return;
+   retry = (USHORT)(c[2 + 2] & 0x3F);                /* data retry count */
+   q = (USHORT)(c[2 + 3] | (c[2 + 4] << 8));         /* queue time, 256 us units */
+   {
+      USHORT rt = (USHORT)(rtl8188eu_ms() - g_rpt_t0);
+
+      g_xr_rt8 = (USHORT)(g_xr_rt8 - (g_xr_rt8 >> 3) + rt);
+      if (rt > g_xr_rt_max) g_xr_rt_max = rt;
+   }
+   g_xr_n++;
+   g_xr_retry = (USHORT)(g_xr_retry + retry);
+   if (retry > g_xr_retry_max) g_xr_retry_max = retry;
+   g_xr_q8 = (USHORT)(g_xr_q8 - (g_xr_q8 >> 3) + q);
+   if (q > g_xr_q_max) g_xr_q_max = q;
+   if (q > 40) g_xr_big++;                           /* queued for more than ~10 ms */
+   g_xr_rate = c[2 + 5];
+   if (c[2 + 0] & 0xC0) g_xr_over++;                 /* retry limit / life time exceeded: frame lost */
+}
+
 /* Walk g_acc: [24B RX desc][drvinfo][shift][pkt_len bytes] per frame, back to
  * back (RX aggregation is off, so no padding). Frames can straddle reads, so
  * leftover bytes are shifted to the front and completed by the next read. */
@@ -662,9 +794,12 @@ static void rx_parse(void)
       if (remain < total)
          break;                                  /* wait for the rest            */
       g_rxsw = (UCHAR)(p[3] & 0x08);                /* RX desc dw0 bit 27: chip did not decrypt */
-      if (!(p[1] & 0xC0))                         /* skip CRC32 / ICV-error frames */
+      if (p[11] & 0x10)                           /* RX desc dw2 bit 28: a C2H report, not a received frame */
+         rx_c2h(p + 24 + drv + sh, pl);
+      else if (!(p[1] & 0xC0)) {                  /* skip CRC32 / ICV-error frames */
+         rx_stats(p, p + 24 + drv);
          note_frame(p + 24 + drv, pl, rx_rssi(p, drv));
-      else
+      } else
          g_ncrc++;
       if ((p[3] & 0x04) && drv >= 16 && (p[24 + drv] & 0xFC) == 0x80) {   /* PHY-status layout probe */
          UCHAR isck = (UCHAR)((p[12] & 0x3F) <= 3);
@@ -719,6 +854,10 @@ void rtl_rx_feed(UCHAR *buf, USHORT n)
    g_dg_feeds++;
    if (n > g_dg_maxn) g_dg_maxn = n;
    if (n >= USB_RXBUF) g_dg_full++;
+   if (g_acc_reset) {                            /* channel change / join: start a fresh stream */
+      g_acc_reset = 0;
+      g_accn = 0;
+   }
    if ((USHORT)(g_accn + n) > ACCSZ)             /* overflow guard: start over   */
       g_accn = 0;
    for (i = 0; i < n; i++)
@@ -753,27 +892,76 @@ void rtl8188eu_tx_prepare(usb_dev_t *dev)
 {
    USHORT i;
 
-   rtw_write16(dev, 0x010C, 0xFAF0);
    for (i = 0; i < 6; i++)
-      rtw_write8(dev, (USHORT)(0x0610 + i), g_mymac[i]);
-   rtw_write8(dev, 0x0522, 0x00);
-   rtw_write32(dev, 0x0440, 0x000FFFF1UL);
+      rtw_write8(dev, (USHORT)(0x0610 + i), g_mymac[i]);         /* MACID */
+   rtw_write8(dev, 0x0522, 0x00);                               /* TX queues un-paused */
+}
+
+/* ===== Receiver gain (IGI, BB 0xC50 bits 6:0) ======================================
+ * The BB table leaves it at 0x20, the most sensitive setting. At a strong signal that overloads the front end: on an
+ * access point at -31 dBm the TX reports showed 45% retries (the chip does not hear the ACKs) and 0.65 MB/s; with 0x3A
+ * the retries fell to 11% and the download ran at 1.8 MB/s (0x46 deafened the receiver completely). Realtek's driver
+ * raises the gain with the signal for the same reason: target = signal (dBm) + 90, kept between 0x20 and 0x3A, moved
+ * by at most 4 per step and only when it is 2 or more away. Scans use 0x20 (hear everything). Runs from task time
+ * (register writes block), every 2 s at most, from the OID request path. */
+UCHAR g_dig_auto = 1;                             /* debug "dig 0" switches the automatic gain off (then "w c50 N" is the gain) */
+static UCHAR g_igi = 0x20;
+static ULONG g_dig_next;
+
+static void dig_set(usb_dev_t *dev, UCHAR v)
+{
+   if (v == g_igi)
+      return;
+   rtw_write8(dev, 0x0C50, v);
+   g_igi = v;
+}
+
+void rtl8188eu_dig_tick(usb_dev_t *dev)
+{
+   ULONG       now = rtl8188eu_ms();
+   signed char r;
+   int         t, d;
+
+   if (!g_dig_auto || (long)(now - g_dig_next) < 0L)
+      return;
+   g_dig_next = now + 2000UL;
+   t = 0x20;
+   if (g_joined) {
+      r = rtl8188eu_rssi_of(g_jbssid);
+      if (r != 0) {
+         t = (int)r + 90;
+         if (t < 0x20) t = 0x20;
+         if (t > 0x3A) t = 0x3A;
+      }
+   }
+   d = t - (int)g_igi;
+   if (d >= -1 && d <= 1)
+      return;
+   if (d > 4)  d = 4;
+   if (d < -4) d = -4;
+   dig_set(dev, (UCHAR)((int)g_igi + d));
 }
 
 /* One quiet pass over channels 1..13 into g_net (no serial output). The table is rebuilt. */
 void rtl8188eu_scan_once(usb_dev_t *dev)
 {
+   static const UCHAR chlist[] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 36, 40, 44, 48, 149, 153, 157, 161 };
    UCHAR  ep = find_bulk_in_ep(dev);
-   USHORT ch, r;
+   USHORT i, r;
+   UCHAR  ch;
 
+   if (g_r21_hold)
+      return;
+   dig_set(dev, 0x20);                           /* a scan wants the most sensitive receiver */
    g_nnet = 0;
-   for (ch = 1; ch <= 13; ch++) {
-      rf_tune20(dev, (UCHAR)ch);
-      g_curch = (UCHAR)ch;
-      g_accn = 0;
-      usb_mdelay(40);
+   for (i = 0; i < sizeof(chlist); i++) {
+      ch = chlist[i];
+      rtl8821_set_channel(dev, ch);
+      g_curch = ch;
+      g_acc_reset = 1;
+      usb_mdelay(25);
       for (r = 0; r < 4; r++)
-         if (rx_read(dev, ep, 150) == 0)
+         if (rx_read(dev, ep, 95) == 0)
             break;
    }
 }
@@ -817,7 +1005,7 @@ static void print_nets(char *title)
  *   dw3 EN_HWSEQ (hardware numbers the frame)    dw4 USERATE | disable data fallback
  *   dw5 fallback limits | rate (0 = 1 Mbps CCK)   dw7 = XOR of the 16 descriptor words
  * Management frames use bulk endpoint 2 (the high-priority queue). */
-static UCHAR  g_txbuf[760];
+static UCHAR  g_txbuf[TXD_LEN + 720];
 static USHORT g_txact;
 
 static void put32(UCHAR *p, USHORT hi, USHORT lo)
@@ -838,25 +1026,14 @@ UCHAR g_ctlrate;                               /* rate code for handshake / ARP 
 
 static void txd_fill(UCHAR *b, USHORT n, int bcast, int data, int sec, UCHAR rate)
 {
-   USHORT i, ck = 0;
+   static UCHAR rptc;
+   int    rpt = (int)(data && ((rptc++ & 3) == 0));
 
-   for (i = 0; i < 48; i++) b[i] = 0;
-
-   put32(b + 0,  (USHORT)(bcast ? 0x8D20 : 0x8C20), n);       /* OWN FS LS [BMC] off=32 len */
-   if (data)
-      put32(b + 4, (USHORT)(0x0800 | (sec ? 0x00C0 : 0)), 0x0001);   /* macid 1, QSEL_BE, SEC_TYPE, pkt_offset 2 */
-   else
-      put32(b + 4, 0x0800, 0x1201);                           /* macid 1, QSEL_MGNT, pkt_offset 2 */
-   put32(b + 8,  (USHORT)(data ? 0x0001 : 0), 0);             /* data: AGG_BK */
-   put32(b + 12, 0x8000, 0);                                  /* EN_HWSEQ */
-   put32(b + 16, 0, 0x0500);                                  /* USERATE | DISDATAFB */
-   put32(b + 20, 0, (USHORT)(0x1F00 | (rate & 0x3F)));         /* fallback limits | rate code */
-   put32(b + 24, 0, 0);
-   put32(b + 28, 0, 0);
-   for (i = 0; i < 16; i++)                                   /* checksum over the 16 words */
-      ck ^= (USHORT)(b[2 * i] | (b[2 * i + 1] << 8));
-   b[28] = (UCHAR)(ck & 0xFF);
-   b[29] = (UCHAR)(ck >> 8);
+   if (g_curch > 14 && rate < 4)
+      rate = 4;                                     /* no CCK on 5 GHz: 6 Mbit/s OFDM */
+   if (rpt)
+      g_rpt_t0 = rtl8188eu_ms();
+   rtl8821_fill_desc(b, n, bcast, (UCHAR)(data ? 0x00 : 0x12), sec, rate, rpt);
 }
 
 /* Diagnostics, read back through \DEV\WRND32$ (see rtl_dhcp.c): why the last join failed, and USB/radio counters. */
@@ -881,19 +1058,19 @@ static int tx_raw(usb_dev_t *dev, UCHAR *f, USHORT n, int bcast, int data, int s
       if (slot == 0xFFFF)
          return -1;
       b = usb_tx_buf(slot);
-      for (i = 0; i < n; i++)  b[48 + i] = f[i];
+      for (i = 0; i < n; i++)  b[TXD_LEN + i] = f[i];
       txd_fill(b, n, bcast, data, sec, (UCHAR)(data ? g_ctlrate : g_mgmtrate));
-      rc = usb_tx_submit(dev, (UCHAR)(data ? 3 : 2), slot, (USHORT)(48 + n));
+      rc = usb_tx_submit(dev, (UCHAR)(data ? TXEP_DATA : TXEP_MGT), slot, (USHORT)(TXD_LEN + n));
       if (rc == 0) g_dg_txok++;
       else         { g_dg_txfail++; g_dg_txlast = (USHORT)rc; }
       for (w = 0; w < 100 && g_tx_busy; w++)
          usb_mdelay(1);
       return rc;
    }
-   for (i = 0; i < n; i++)  g_txbuf[48 + i] = f[i];
+   for (i = 0; i < n; i++)  g_txbuf[TXD_LEN + i] = f[i];
    txd_fill(g_txbuf, n, bcast, data, sec, (UCHAR)(data ? g_ctlrate : g_mgmtrate));   /* mgmt frames 1 Mbit/s unless "mrate"; handshake data frames g_ctlrate */
    g_txact = 0;
-   rc = usb_bulk_msg(dev, (UCHAR)(data ? 3 : 2), USB_DIR_OUT, g_txbuf, (USHORT)(48 + n), &g_txact);
+   rc = usb_bulk_msg(dev, (UCHAR)(data ? TXEP_DATA : TXEP_MGT), USB_DIR_OUT, g_txbuf, (USHORT)(TXD_LEN + n), &g_txact);
    if (rc == 0) g_dg_txok++;
    else         { g_dg_txfail++; g_dg_txlast = (USHORT)rc; }
    return rc;
@@ -1085,7 +1262,7 @@ int rtl8188eu_join(usb_dev_t *dev, UCHAR *want_bssid)
    tcom_mac(g_target); tcom_str(" ch"); tcom_dec(g_net[best].ch);
 
    rtl8188eu_tx_prepare(dev);
-   rf_tune20(dev, g_net[best].ch);
+   rtl8821_set_channel(dev, g_net[best].ch);
    g_curch = g_net[best].ch;
 #if RUN_TXPOWER
    rtl8188eu_set_txpower(dev, g_net[best].ch);        /* per-rate power for this channel */
@@ -1095,7 +1272,7 @@ int rtl8188eu_join(usb_dev_t *dev, UCHAR *want_bssid)
    rtw_write32(dev, REG_RCR, RX_RCR | 0x1000UL);   /* ACF: let the AP's ACKs of our frames through (diagnostics) */
 
    for (att = 1; att <= 3 && g_assoc_st != 0; att++) {
-      g_accn = 0;
+      g_acc_reset = 1;
       for (r = 0; r < 2; r++)
          if (rx_read(dev, ep, 60) == 0)
             break;
@@ -1128,6 +1305,9 @@ int rtl8188eu_join(usb_dev_t *dev, UCHAR *want_bssid)
       else                           g_dg_reason = 5;      /* refused the association (status in JASSOC) */
       return -1;
    }
+   for (i = 0; i < 6; i++)
+      rtw_write8(dev, (USHORT)(0x0618 + i), g_target[i]);         /* BSSID register: the MAC drops other networks' frames */
+   rtw_write32(dev, REG_RCR, RX_RCR_LINKED);
    g_dg_reason = 0;
    for (i = 0; i < 6; i++) g_jbssid[i] = g_target[i];
    for (i = 0; i < 33; i++) g_jssid[i] = (UCHAR)g_net[best].ssid[i];
@@ -1164,7 +1344,7 @@ void rtl8188eu_dbg_probe(USHORT count, USHORT pad)
       return;
    for (i = 0; i < 6; i++) g_target[i] = g_net[best].bssid[i];
    rtl8188eu_tx_prepare(&g_usbdev);
-   rf_tune20(&g_usbdev, g_net[best].ch);
+   rtl8821_set_channel(&g_usbdev, g_net[best].ch);
    g_curch = g_net[best].ch;
    usb_mdelay(40);
    base = g_prme;
@@ -1201,6 +1381,9 @@ void rtl8188eu_diag_set(USHORT reason, USHORT a, USHORT b)
 }
 
 /* Diagnostic value number i (see the names in rtl_dhcp.c); 0xFFFF past the end. */
+extern USHORT g_kadd_p, g_kadd_g, g_krem, g_kdup;   /* key install counters (below) */
+static USHORT g_pn[3];                            /* TX packet number: PN1:PN0, PN3:PN2, PN5:PN4 (declared again with its users) */
+
 USHORT rtl8188eu_diag(USHORT i)
 {
    if (i == 0)  return g_dg_reason;
@@ -1238,6 +1421,81 @@ USHORT rtl8188eu_diag(USHORT i)
    if (i == 43) return g_ev_n;
    if (i == 44) return g_pr_sent;
    if (i == 45) return g_pr_got;
+   if (i == 55) return g_nd;
+   if (i == 56) return g_np;
+   if (i == 57) return g_nsw;
+   if (i == 58) return g_ndrop;
+   if (i == 59) return g_ntx_call;
+   if (i == 60) return g_ntx_ok;
+   if (i == 61) return g_ntx_nokey;
+   if (i == 62) return g_ntx_noslot;
+   if (i == 63) return g_ptk_ok;
+   if (i == 64) return g_gtk_ok;
+   if (i == 65) return g_joined;
+   if (i == 66) return g_ndup;
+   if (i == 67) return g_dqn;
+   if (i == 68) return g_ind_drop_busy;
+   if (i == 69) return g_ind_drop_off;
+   if (i == 70) return (USHORT)(g_txlat_avg8 >> 3);
+   if (i == 71) return g_txlat_max;
+   if (i == 72) return g_txlat_n;
+   if (i == 73) return g_ntx_arp;
+   if (i == 74) return g_ntx_tcp;
+   if (i == 75) return g_ntx_ack;
+   if (i == 76) return g_ntx_udp;
+   if (i == 77) return g_ntx_icmp;
+   if (i == 78) return g_ntx_other;
+   if (i == 79) return g_xr_n;
+   if (i == 80) return g_xr_retry;
+   if (i == 81) return g_xr_retry_max;
+   if (i == 82) return (USHORT)(g_xr_q8 >> 3);
+   if (i == 83) return g_xr_q_max;
+   if (i == 84) return g_xr_rate;
+   if (i == 85) return g_xr_over;
+   if (i == 86) return g_xr_big;
+   if (i >= 87 && i <= 92) return g_rx_cls[i - 87];
+   if (i == 93) return g_dev_rng;
+   if (i == 94) return g_dev_n;
+   if (i == 95) return (USHORT)(g_xr_rt8 >> 3);
+   if (i == 96) return g_xr_rt_max;
+   if (i == 97) return g_icmp_n;
+   if (i == 98) return (USHORT)(g_icmp_avg8 >> 3);
+   if (i == 99) return g_icmp_max;
+   if (i == 100) return g_rc_n;
+   if (i == 101) return (USHORT)(g_rc_avg8 >> 3);
+   if (i == 102) return g_rc_max;
+   if (i == 103) return g_rc_slow;
+   if (i == 104) return g_if_on;
+   if (i == 105) return g_if_off;
+   if (i == 106) return g_rel_n;
+   if (i == 107) return (USHORT)(g_rel_avg8 >> 3);
+   if (i == 108) return g_rel_max;
+   if (i == 109) return g_rc_wait;
+   if (i == 110) return g_rc_succ;
+   if (i == 111) return g_rc_other;
+   if (i == 112) return g_use_hook;
+   if (i == 113) return g_hk_run;
+   if (i == 114) return g_hk_maxq;
+   if (i == 115) return g_hk_arm_fail;
+   if (i >= 116 && i <= 120) return g_rxgap[i - 116];
+   if (i >= 121 && i <= 123) return ndis_diag((USHORT)(i - 121));
+   if (i == 127) return g_kadd_p;
+   if (i == 128) return g_kadd_g;
+   if (i == 129) return g_krem;
+   if (i == 130) return g_kdup;
+   if (i == 131) return g_pn[0];
+   if (i == 132) return g_pn[1];
+   if (i == 139) return usb_ep_info(22);
+   if (i == 133) return g_dc_n;
+   if (i == 134) return g_dc_r1;
+   if (i == 135) return g_dc_sub1;
+   if (i == 136) return g_dc_sec1;
+   if (i == 137) return g_dc_rl;
+   if (i == 138) return g_dc_secl;
+   if (i == 124) return usb_ep_info(20);
+   if (i == 125) return usb_ep_info(21);
+   if (i == 126) return ndis_diag(3);
+   if (i >= 140 && i <= 152) return ndis_diag((USHORT)(i - 140 + 4));   /* RCV0-3 RCC0-3 RCLAST RCLEN RCET RCIPP RCDST */
    return 0xFFFF;
 }
 
@@ -1283,6 +1541,7 @@ void rtl8188eu_leave(usb_dev_t *dev)
    usb_mdelay(20);
    tx_deauth(dev, g_jbssid);
    g_joined = 0;
+   rtw_write32(dev, REG_RCR, RX_RCR);                     /* scan filter again: every network */
    g_eqh = g_eqt = g_eqn = 0;
    g_dqh = g_dqt = g_dqn = 0;
    keys_reset(dev, 0);
@@ -1323,12 +1582,26 @@ ULONG rtl8188eu_ms(void)                         /* ms since boot (0 if the cloc
    return led_now();
 }
 
+/* 8821AU, USB (non-minicard) board: the LED hangs on GPIO8, driven through REG_GPIO_PIN_CTRL_2 (0x60) with the LEDCFG2 (0x4E)
+ * hardware modes switched off: 0x4E keeps only its top two bits, 0x60 bit16 = output enable, bit24 = 0, bit8 = level
+ * (0 = LED on, 1 = off). Same sequence as SwLedOn_8821AU / SwLedOff_8821AU in the Linux driver. */
 static void led_set(usb_dev_t *dev, UCHAR on)
 {
+   ULONG g;
+
    if (g_led_on == on)
       return;
    g_led_on = on;
-   rtw_write8(dev, 0x004E, (UCHAR)(on ? 0x20 : 0x28));
+   if (on)
+      rtw_write8(dev, 0x004E, (UCHAR)(rtw_read8(dev, 0x004E) & 0xC0));
+   g = rtw_read32(dev, 0x0060);
+   g |= 0x00010000UL;
+   g &= ~0x01000000UL;
+   if (on)
+      g &= ~0x00000100UL;
+   else
+      g |= 0x00000100UL;
+   rtw_write32(dev, 0x0060, g);
 }
 
 static UCHAR g_led_dead;                         /* set at shutdown: the LED stays off */
@@ -1395,7 +1668,7 @@ USHORT rtl8188eu_eapol_get(UCHAR FAR *out, USHORT room)
    else
       n = 0;
    g_eqh = (USHORT)((g_eqh + 1) % EQN);
-   g_eqn--;
+   rt_atomic_dec(&g_eqn);
    return n;
 }
 
@@ -1435,12 +1708,22 @@ static void cam_write(usb_dev_t *dev, UCHAR entry, USHORT ctrl, UCHAR *mac, UCHA
    }
 }
 
+/* The packet number belongs to the TX queue lock (see rtl8188eu_ndis_tx_slot): TransmitChain may be using it on another CPU. */
+static void pn_reset(void)
+{
+   USHORT fl = usb_txq_lock();
+
+   g_pn[0] = 1; g_pn[1] = g_pn[2] = 0;
+   if (fl != 0xFFFF)
+      usb_txq_unlock(fl);
+}
+
 static void keys_reset(usb_dev_t *dev, UCHAR secure)
 {
    rtw_write32(dev, 0x0670, 0xC0000000UL);        /* invalidate the whole CAM */
    rtw_write8(dev, 0x0680, (UCHAR)(secure ? 0xCC : 0x00));
    g_ptk_ok = g_gtk_ok = 0;
-   g_pn[0] = 1; g_pn[1] = g_pn[2] = 0;
+   pn_reset();
 }
 
 /* The dongle went away (or is being re-initialised): forget the link and everything bound to the
@@ -1451,7 +1734,7 @@ void rtl8188eu_on_detach(void)
    g_ptk_ok = g_gtk_ok = 0;
    g_eqh = g_eqt = g_eqn = 0;
    g_dqh = g_dqt = g_dqn = 0;
-   g_accn = 0;
+   g_acc_reset = 1;
    g_nnet = 0;
    g_rx_deauth = 0;
    g_led_on = 2;                                /* LED state unknown: rewritten after the next init */
@@ -1462,15 +1745,35 @@ int rtl8188eu_has_ptk(void)
    return g_joined && g_ptk_ok;
 }
 
+/* Key installs, for the diagnostics: pairwise adds, group adds, removes, and pairwise adds of the key already in use. */
+USHORT g_kadd_p, g_kadd_g, g_krem, g_kdup;
+static UCHAR g_ptk_last[16];
+
 int rtl8188eu_key_add(usb_dev_t *dev, UCHAR idx, UCHAR pairwise, UCHAR *key)
 {
    if (!g_joined)
       return -1;
    if (pairwise) {
+      USHORT q, same = 1;
+
+      g_kadd_p++;
+      for (q = 0; q < 16; q++)
+         if (g_ptk_last[q] != key[q]) { same = 0; break; }
+      if (g_ptk_ok && same) {
+         /* The supplicant installs the key it already installed (an access point that repeats message 3 of the
+          * handshake). Writing it again would restart our packet number at 1, and the access point - whose replay
+          * counter for this key is already higher - would drop every frame until the numbers caught up (the link
+          * "stalls": ping gets no answer although our frames are acknowledged). Keep the key and the numbering. */
+         g_kdup++;
+         tcom_str("[key P dup]");
+         return 0;
+      }
       cam_write(dev, 4, (USHORT)(0x8000 | (4 << 2)), g_jbssid, key);
+      pn_reset();                                  /* new key: numbering starts again, before the key is used */
+      for (q = 0; q < 16; q++) g_ptk_last[q] = key[q];
       g_ptk_ok = 1;
-      g_pn[0] = 1; g_pn[1] = g_pn[2] = 0;
    } else {
+      g_kadd_g++;
       idx = (UCHAR)(idx & 3);
       cam_write(dev, idx, (USHORT)(0x8000 | (4 << 2) | idx), g_nomac, key);
       g_gtk_ok = 1;
@@ -1482,6 +1785,7 @@ int rtl8188eu_key_add(usb_dev_t *dev, UCHAR idx, UCHAR pairwise, UCHAR *key)
 
 void rtl8188eu_key_remove(usb_dev_t *dev, UCHAR idx, UCHAR pairwise)
 {
+   g_krem++;
    if (pairwise) {
       cam_write(dev, 4, 0, g_nomac, g_zero16);
       g_ptk_ok = 0;
@@ -1512,28 +1816,32 @@ int rtl8188eu_eth_tx(usb_dev_t *dev, UCHAR FAR *eth, USHORT len)
       return -1;
    for (i = 0; i < len; i++)
       g_ethtx[i] = eth[i];
+   if (enc) {
+      /* Protected: the NDIS data path, so this frame's packet number is taken in the same locked step as its
+       * submission and cannot overtake (or be overtaken by) a TransmitChain frame on another CPU. Waits for the
+       * slot like the "txa" path so the handshake keeps its old pacing. */
+      USHORT w;
+      int    rc = rtl8188eu_ndis_tx(g_ethtx, len);
+
+      for (w = 0; w < 100 && g_tx_busy; w++)
+         usb_mdelay(1);
+      if (rc == 0) g_dg_txok++;
+      else         { g_dg_txfail++; g_dg_txlast = (USHORT)rc; }
+      return rc;
+   }
    for (i = 0; i < 40; i++) f[i] = 0;
    f[0] = 0x08;                                    /* data frame            */
-   f[1] = (UCHAR)(enc ? 0x41 : 0x01);              /* ToDS [+ Protected]    */
+   f[1] = 0x01;                                    /* ToDS                  */
    for (i = 0; i < 6; i++) {
       f[4 + i]  = g_jbssid[i];                     /* A1 = BSSID (AP)       */
       f[10 + i] = g_mymac[i];                      /* A2 = us               */
       f[16 + i] = g_ethtx[i];                      /* A3 = destination      */
    }
    n = 24;
-   if (enc) {                                      /* CCMP header           */
-      f[n++] = (UCHAR)(g_pn[0] & 0xFF); f[n++] = (UCHAR)(g_pn[0] >> 8);
-      f[n++] = 0;                       f[n++] = 0x20;
-      f[n++] = (UCHAR)(g_pn[1] & 0xFF); f[n++] = (UCHAR)(g_pn[1] >> 8);
-      f[n++] = (UCHAR)(g_pn[2] & 0xFF); f[n++] = (UCHAR)(g_pn[2] >> 8);
-      if (++g_pn[0] == 0)
-         if (++g_pn[1] == 0)
-            g_pn[2]++;
-   }
    for (i = 0; i < 6; i++) f[n++] = llc[i];
    f[n++] = g_ethtx[12]; f[n++] = g_ethtx[13];     /* ethertype             */
    for (i = 14; i < len; i++) f[n++] = g_ethtx[i];
-   return tx_raw(dev, f, n, 0, enc, enc);
+   return tx_raw(dev, f, n, 0, 0, 0);              /* plain: the proven management queue, as before */
 }
 
 /* NDIS transmit path: an Ethernet frame from the protocol stack -> encrypted 802.11 data
@@ -1590,41 +1898,126 @@ static UCHAR choose_rate(UCHAR *eth, USHORT len)
    return adapt_rate();
 }
 
-int rtl8188eu_ndis_tx(UCHAR *eth, USHORT len)
+int rtl8188eu_tx_ready(void)
+{
+   return g_joined && g_ptk_ok;
+}
+
+/* A free TX slot for an outgoing NDIS frame. All slots in flight: a slot frees within ~3 ms, so wait for it here
+ * instead of making the protocol retry in a tight loop. 0xFFFF = none. */
+USHORT rtl8188eu_ndis_slot(void)
+{
+   USHORT slot = usb_tx_alloc();
+
+   if (slot == 0xFFFF) {
+      ULONG  t0 = rtl8188eu_ms();
+      USHORT spin;
+
+      for (spin = 0; spin < 30000U && slot == 0xFFFF; spin++) {
+         if ((spin & 255) == 255 && (long)(rtl8188eu_ms() - t0) > 6L)
+            break;
+         slot = usb_tx_alloc();
+      }
+      if (slot == 0xFFFF)
+         g_ntx_noslot++;
+   }
+   return slot;
+}
+
+/* The Ethernet frame (len bytes) is in the slot at TX_ETH_OFF; turn it into a protected 802.11 data frame in place
+ * and queue it. The TX descriptor + 802.11 + CCMP + LLC/SNAP headers end exactly where the Ethernet payload already
+ * is, so only the 66 header bytes are written. The packet number is taken under the TX queue lock together with the
+ * submission: on an SMP kernel TransmitChain runs on several CPUs at once, and an unlocked "++g_pn" could hand out
+ * one number twice or let a higher number reach the dongle first (the access point drops both as replays).
+ * Returns 0 queued, -1 dropped (no connection/keys, bad size), -2 not queued now (retry). The slot is released on
+ * failure. */
+int rtl8188eu_ndis_tx_slot(USHORT slot, USHORT len)
 {
    static UCHAR llc[6] = { 0xAA, 0xAA, 0x03, 0x00, 0x00, 0x00 };
-   USHORT slot, i, n;
-   UCHAR  *b, *f;
+   USHORT i, n, fl;
+   UCHAR  *b, *f, *eth, rate, et0, et1;
+   UCHAR  da[6];
+   int    rc;
 
-   if (!g_joined || !g_ptk_ok || len < 14 || len > MAX_FRAME_SIZE)
+   b   = usb_tx_buf(slot);
+   eth = b + TX_ETH_OFF;
+   g_ntx_call++;
+   if (len >= 35 && eth[12] == 0x08 && eth[13] == 0x00 && eth[23] == 1 && eth[34] == 0 && g_icmp_t0) {
+      USHORT dt = (USHORT)(rtl8188eu_ms() - g_icmp_t0);       /* the stack's answer to an echo request */
+
+      g_icmp_n++;
+      g_icmp_avg8 = (USHORT)(g_icmp_avg8 - (g_icmp_avg8 >> 3) + dt);
+      if (dt > g_icmp_max) g_icmp_max = dt;
+      g_icmp_t0 = 0;
+   }
+   if (len >= 14) {
+      if (eth[12] == 0x08 && eth[13] == 0x06) g_ntx_arp++;
+      else if (eth[12] == 0x08 && eth[13] == 0x00 && len >= 34) {
+         if (eth[23] == 6)       { g_ntx_tcp++; if (len <= 66) g_ntx_ack++; }
+         else if (eth[23] == 17) g_ntx_udp++;
+         else if (eth[23] == 1)  g_ntx_icmp++;
+         else                    g_ntx_other++;
+      } else g_ntx_other++;
+   }
+   if (!g_joined || !g_ptk_ok || len < 14 || len > MAX_FRAME_SIZE) {
+      g_ntx_nokey++;
+      usb_tx_release(slot);
       return -1;
+   }
    g_led_act = 1;
-   slot = usb_tx_alloc();
-   if (slot == 0xFFFF)
-      return -2;
-   b = usb_tx_buf(slot);
-   f = b + 48;
+   f   = b + TXD_LEN;
+   rate = choose_rate(eth, len);                   /* reads the Ethernet header: before it is overwritten */
+   for (i = 0; i < 6; i++) da[i] = eth[i];
+   et0 = eth[12]; et1 = eth[13];
    for (i = 0; i < 40; i++) f[i] = 0;
    f[0] = 0x08;                                    /* data frame            */
    f[1] = 0x41;                                    /* ToDS | Protected      */
    for (i = 0; i < 6; i++) {
       f[4 + i]  = g_jbssid[i];                     /* A1 = BSSID (AP)       */
       f[10 + i] = g_mymac[i];                      /* A2 = us               */
-      f[16 + i] = eth[i];                          /* A3 = destination      */
+      f[16 + i] = da[i];                           /* A3 = destination      */
    }
-   n = 24;
-   f[n++] = (UCHAR)(g_pn[0] & 0xFF); f[n++] = (UCHAR)(g_pn[0] >> 8);    /* CCMP header */
-   f[n++] = 0;                       f[n++] = 0x20;
-   f[n++] = (UCHAR)(g_pn[1] & 0xFF); f[n++] = (UCHAR)(g_pn[1] >> 8);
-   f[n++] = (UCHAR)(g_pn[2] & 0xFF); f[n++] = (UCHAR)(g_pn[2] >> 8);
+   f[27] = 0x20;                                   /* CCMP: ExtIV, key id 0 (PN bytes are filled in under the lock) */
+   for (i = 0; i < 6; i++) f[32 + i] = llc[i];
+   f[38] = et0; f[39] = et1;                       /* ethertype; the payload follows in place */
+   n = (USHORT)(40 + len - 14);
+   txd_fill(b, n, 0, 1, 1, rate);                  /* the descriptor checksum does not cover the frame */
+
+   fl = usb_txq_lock();
+   if (fl == 0xFFFF) {                             /* this CPU already holds it (re-entered): try again later */
+      usb_tx_release(slot);
+      return -2;
+   }
+   f[24] = (UCHAR)(g_pn[0] & 0xFF); f[25] = (UCHAR)(g_pn[0] >> 8);
+   f[28] = (UCHAR)(g_pn[1] & 0xFF); f[29] = (UCHAR)(g_pn[1] >> 8);
+   f[30] = (UCHAR)(g_pn[2] & 0xFF); f[31] = (UCHAR)(g_pn[2] >> 8);
    if (++g_pn[0] == 0)
       if (++g_pn[1] == 0)
          g_pn[2]++;
-   for (i = 0; i < 6; i++) f[n++] = llc[i];
-   f[n++] = eth[12]; f[n++] = eth[13];             /* ethertype             */
-   for (i = 14; i < len; i++) f[n++] = eth[i];
-   txd_fill(b, n, 0, 1, 1, choose_rate(eth, len));
-   return usb_tx_submit(&g_usbdev, 3, slot, (USHORT)(48 + n));
+   rc = usb_tx_submit_locked(&g_usbdev, TXEP_DATA, slot, (USHORT)(TXD_LEN + n));
+   usb_txq_unlock(fl);
+   if (rc == 0) g_ntx_ok++;
+   return rc;
+}
+
+/* Same for a frame in driver memory (the DHCP client, protected EAPOL replies). */
+int rtl8188eu_ndis_tx(UCHAR *eth, USHORT len)
+{
+   USHORT slot, i;
+   UCHAR  *d;
+
+   if (!g_joined || !g_ptk_ok || len < 14 || len > MAX_FRAME_SIZE) {
+      g_ntx_call++;
+      g_ntx_nokey++;
+      return -1;
+   }
+   slot = rtl8188eu_ndis_slot();
+   if (slot == 0xFFFF)
+      return -2;
+   d = usb_tx_buf(slot) + TX_ETH_OFF;
+   for (i = 0; i < len; i++)
+      d[i] = eth[i];
+   return rtl8188eu_ndis_tx_slot(slot, len);
 }
 
 int rtl8188eu_eapol_tx(usb_dev_t *dev, UCHAR FAR *eth, USHORT len)

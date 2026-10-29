@@ -1,4 +1,6 @@
 # Keep every file byte-for-byte as it is. The OS/2 tools need CRLF in .cmd files and the sources mix
-# CRLF and LF; the built driver is binary. No end-of-line conversion on any platform.
+# CRLF and LF; the built drivers are binary. No end-of-line conversion on any platform.
 * -text
 *.OS2 binary
+*.FW binary
+*.zip binary

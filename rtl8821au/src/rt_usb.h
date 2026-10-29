@@ -168,8 +168,8 @@ typedef struct {
 #define USRB_FLAGS_DET_DTGGLEON    0x0800   /* data toggle of the first packet (set/cleared on completion) */
 
 /* --- our target device ------------------------------------------------- */
-#define RTL8188EU_VID   0x0BDA
-#define RTL8188EU_PID   0x8179
+#define RTL8188EU_VID   0x2357   /* TP-Link Archer T2U Nano (RTL8811AU) */
+#define RTL8188EU_PID   0x011E
 
 /* --- USB defaults: endpoint 0, no service interval, 64-byte control packets (USB 2.0 9.6.6), at most 3 retries (USBPRM 6.1.1.1) --- */
 #ifndef USB_DEFAULT_CTRL_ENDPT
@@ -245,15 +245,27 @@ void usb_mdelay(USHORT ms);
  * RX: one bulk-IN request is always outstanding; its completion (task time, may
  * not block) feeds rtl_rx_feed() and immediately resubmits. TX: a small pool of
  * slots; usb_tx_submit() posts one frame without waiting, completion frees it. */
-#define USB_RXBUF     1024
-#define USB_TXSLOTS   4
+#define USB_RXBUF     2048
+#define USB_TXSLOTS   8
 #define USB_TXBUF     1620
 int    usb_rx_start(usb_dev_t *dev, UCHAR ep);
 void   usb_rx_stop(void);
 extern USHORT g_rx_run, g_rx_err, g_rx_errtot;
 USHORT usb_tx_alloc(void);                         /* slot 0..n-1, or 0xFFFF when all busy */
 UCHAR *usb_tx_buf(USHORT slot);                    /* the slot's frame buffer (USB_TXBUF)  */
-int    usb_tx_submit(usb_dev_t *dev, UCHAR ep, USHORT slot, USHORT len);
+int    usb_tx_submit(usb_dev_t *dev, UCHAR ep, USHORT slot, USHORT len);   /* takes the TX queue lock; -2 = re-entered */
+int    usb_tx_submit_locked(usb_dev_t *dev, UCHAR ep, USHORT slot, USHORT len);   /* caller holds usb_txq_lock */
+/* TX queue lock: the order of bulk-OUT submissions (data toggle) and of CCMP packet numbers. Interrupts are off on
+ * this CPU while it is held. Returns the saved FLAGS, or 0xFFFF when this CPU already holds it (re-entered). */
+USHORT usb_txq_lock(void);
+void   usb_txq_unlock(USHORT flags);
+/* Synchronous transfer lock: g_xfer, the setup packet and the bounce buffer are single instances. Task time only.
+ * Held by every rtw_read / rtw_write (rtw_reg.c) around usb_ctrl_msg, and taken by usb_bulk_msg itself. */
+void   usb_xfer_lock(void);
+void   usb_xfer_unlock(void);
+/* An Ethernet frame gathered into a TX slot at this offset needs no copying: the TX descriptor + 802.11 + CCMP +
+ * LLC/SNAP headers (40 + 24 + 8 + 8) end exactly where its payload starts (TX_ETH_OFF + 14). */
+#define TX_ETH_OFF    66
 void   usb_tx_release(USHORT slot);
 extern USHORT g_tx_busy, g_tx_err;
 void   rtl_rx_feed(UCHAR *buf, USHORT n);          /* implemented in rtl_rx.c (completion context) */
@@ -354,7 +366,10 @@ USHORT rtl8188eu_poll(usb_dev_t *dev, USHORT tmo_ms);       /* returns EAPOL fra
 USHORT rtl8188eu_eapol_get(UCHAR FAR *out, USHORT room);
 int    rtl8188eu_eapol_tx(usb_dev_t *dev, UCHAR FAR *eth, USHORT len);
 int    rtl8188eu_eth_tx(usb_dev_t *dev, UCHAR FAR *eth, USHORT len);
-int    rtl8188eu_ndis_tx(UCHAR *eth, USHORT len);   /* async encrypted data TX from the NDIS layer */
+int    rtl8188eu_ndis_tx(UCHAR *eth, USHORT len);   /* async encrypted data TX (copies eth into a slot) */
+int    rtl8188eu_ndis_tx_slot(USHORT slot, USHORT len);   /* same, Ethernet frame already at TX_ETH_OFF in the slot */
+USHORT rtl8188eu_ndis_slot(void);                     /* a free TX slot for it (waits briefly), 0xFFFF = none */
+int    rtl8188eu_tx_ready(void);                     /* joined with a pairwise key: data frames can be sent */
 extern UCHAR g_ctlrate;                  /* rtl_rx.c */
 void   usb_tx_reset(void);                      /* rt_usb.c: free all TX slots (device detached) */
 ULONG  rtl8188eu_ms(void);                      /* rtl_rx.c: milliseconds since boot */
@@ -368,8 +383,10 @@ UCHAR  rtl8188eu_diag_tm(USHORT n, USHORT i);
 USHORT usb_phys(USHORT i, USHORT half);               /* rt_usb.c: physical address of a DMA buffer end */
 extern USHORT g_dump_base;                       /* rtl_dhcp.c: register window to list on the next read (0xFFFF = none) */
 USHORT rtl8188eu_diag_ev(USHORT n, USHORT which);
+USHORT rtl8188eu_diag_ul(USHORT n, USHORT which);   /* log of unicast frames addressed to us */
+USHORT rtl8188eu_diag_ul_n(void);
 void   rtl8188eu_dbg_probe(USHORT count, USHORT pad);   /* rtl_rx.c, debug command "pr" */
-#define DIAG_COUNT 55
+#define DIAG_COUNT 153
 void   rtl8188eu_on_detach(void);               /* rtl_rx.c: forget link, keys and queues */
 void   rtl8188eu_nic_lock(void);                 /* rtl_nic.c: the request lock of the OID interface */
 void   rtl8188eu_nic_unlock(void);
@@ -378,12 +395,50 @@ int    rtl8188eu_card_disable(usb_dev_t *dev);  /* rtl_init.c: power the chip do
 void   rtl8188eu_led_off(usb_dev_t *dev);       /* shutdown: LED off, stays off */
 void   rtl8188eu_shutdown(void);                /* rtl_nic.c: CMDShutdown handler */
 void   rtl8188eu_led_tick(usb_dev_t *dev);      /* call from task time under the request lock */
+void   rtl8188eu_dig_tick(usb_dev_t *dev);      /* receiver gain from the signal strength: same call rules */
+extern UCHAR g_dig_auto;                        /* rtl_rx.c: 0 = automatic receiver gain off (debug "dig 0") */
 int    rtl8188eu_has_ptk(void);                 /* pairwise key installed on the current join */
 int    rtl8188eu_key_add(usb_dev_t *dev, UCHAR idx, UCHAR pairwise, UCHAR *key);   /* key = 16-byte CCMP TK */
 void   rtl8188eu_key_remove(usb_dev_t *dev, UCHAR idx, UCHAR pairwise);
 int    rtl8188eu_hw_init(usb_dev_t *dev);        /* rtw_reg.c: full chip bring-up, once     */
 void   rtl8188eu_on_open(void);                  /* rtl_nic.c: CMDOpen                      */
 void   rtl8188eu_genmac_ioctl(RP_GENIOCTL FAR *rp);  /* rtl_nic.c: CMDGenIOCTL (category 0x99)  */
+
+/* RTL8821A chip layer (rtl8821_hal.c) */
+int    rtl8821_fw_load(void);                     /* INIT time: allocate the firmware buffer */
+int    rtl8821_fw_write(ULONG phys, USHORT n);    /* task time: 1 when this write was the firmware image */
+int    rtl8821_hw_init(usb_dev_t *dev);           /* reset / power-on / LLT / firmware download */
+extern USHORT g_r21_stage, g_r21_pwr_fail, g_r21_llt_fail, g_r21_fwload, g_r21_fwlen, g_r21_fwsig, g_r21_fwtries;
+extern USHORT g_r21_chksum, g_r21_ready;
+extern ULONG  g_r21_mcufwdl, g_r21_cfg;
+extern USHORT g_r21_tried;
+int    rtl8821_phy_init(usb_dev_t *dev);          /* rtl8821_phy.c: MAC / BB / RF init after the firmware runs */
+void   rtl8821_set_channel(usb_dev_t *dev, UCHAR ch);
+void   rtl8821_rx_enable(usb_dev_t *dev);
+int    rtl8821_efuse_load(usb_dev_t *dev);        /* rtl8821_efuse.c */
+int    rtl8821_early_power(usb_dev_t *dev);       /* rtl8821_hal.c: MAC power-on only */
+int    rtl8821_tx_mgmt(usb_dev_t *dev, UCHAR *f, USHORT n, int bcast, UCHAR rate, int cck);   /* rtl8821_tx.c */
+int    rtl8821_tx_beacon(usb_dev_t *dev, UCHAR ch);
+void   rtl8821_fill_desc(UCHAR *b, USHORT n, int bcast, UCHAR qsel, int sec, UCHAR rate, int rpt);   /* 40 byte TX descriptor */
+#define TXD_LEN       40       /* bytes of TX descriptor in front of every frame */
+#define TXEP_MGT      9        /* bulk-OUT endpoint of the management queue (extra) */
+#define TXEP_DATA     8        /* bulk-OUT endpoint of the best-effort queue (low) */
+extern USHORT g_r21_txok, g_r21_txfail, g_r21_txlast, g_r21_channel;
+void   rtl8821_lck(usb_dev_t *dev);
+extern UCHAR  g_r21_ef[512], g_r21_ef_ok, g_r21_xtal, g_r21_lna2g, g_r21_pa2g, g_r21_rfe, g_r21_thermal;
+extern USHORT g_r21_ef_used, g_r21_hold, g_r21_norx;
+extern USHORT g_u_acc, g_u_done, g_u_stat, g_u_wait;
+extern USHORT g_rc_n, g_rc_avg8, g_rc_max, g_rc_slow, g_if_on, g_if_off, g_ind_cli;
+extern USHORT g_rel_n, g_rel_avg8, g_rel_max, g_rc_wait, g_rc_succ, g_rc_other;
+extern USHORT g_use_hook, g_hk_run, g_hk_maxq, g_hk_arm_fail, g_rxgap[5];
+extern USHORT g_txlat_avg8, g_txlat_max, g_txlat_n, g_ind_drop_busy, g_ind_drop_off;
+int    efuse_byte(usb_dev_t *dev, USHORT addr, UCHAR *out);
+void   efuse_power(usb_dev_t *dev, int on);
+ULONG  rtl8821_rf_read(usb_dev_t *dev, UCHAR reg);
+void   rtl8821_rf_write(usb_dev_t *dev, UCHAR reg, ULONG data);
+void   rtl8188eu_rx_engine_start(usb_dev_t *dev);
+extern USHORT g_r21_phy_stage, g_r21_channel;
+extern ULONG  g_r21_chk[8];
 
 /* The resident-end markers (rt_code_end / rt_data_end) are in rt_end.asm, linked last. */
 

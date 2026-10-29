@@ -87,18 +87,18 @@
 #define OID_802_11_BSSID_LIST           0x0D010217UL
 
 /* ---- one request at a time (scans block; callers can be on several threads) ---- */
-static ULONG  g_nic_busy;
+static UCHAR  g_nic_busy;               /* taken with an atomic exchange: two threads can run the strategy routine at once on SMP */
 static USHORT g_nic_awake;
 static UCHAR  g_pj;                /* a (re)join is pending: runs from a later request, once the supplicant has seen the drop */
 static ULONG  g_pj_due;            /* ...not before this time (ms since boot) */
+static ULONG  g_scan_end;           /* ms clock when the last scan finished */
 static USHORT g_scanning;          /* a scan is sweeping the channels (holds g_nic_busy for ~2.5 s) */
-#define NIC_EVENT  ((ULONG)(ULONG FAR *)&g_nic_busy)
+#define NIC_EVENT  ((ULONG)(UCHAR FAR *)&g_nic_busy)
 
 static void nic_lock(void)
 {
-   while (g_nic_busy)
-      rt_dh_procblock(NIC_EVENT, 2000L, 0);
-   g_nic_busy = 1;
+   while (rt_tas(&g_nic_busy))
+      rt_dh_procblock(NIC_EVENT, 50L, 0);              /* short: a ProcRun between the failed attempt and the block is lost */
 }
 
 static void nic_unlock(void)
@@ -457,10 +457,11 @@ static void oid_request(int is_set, ULONG oid, UCHAR FAR *dat, USHORT dlen)
       switch (oid_id(oid)) {
       case ID_SCAN:
          if (!g_hw_ready) { g_st = NDIS_STATUS_ADAPTER_NOT_READY; return; }
-         if (!g_joined)                           /* never leave the AP's channel while joined */
+         if (!g_joined && !(g_nnet && g_scan_end && (long)(rtl8188eu_ms() - g_scan_end) < 4000L))   /* joined: stay on the AP's channel; a scan 4 s ago is still good */
          {
             g_scanning = 1;
             rtl8188eu_scan_once(&g_usbdev);
+            g_scan_end = rtl8188eu_ms();
             g_scanning = 0;
             g_st = NDIS_STATUS_SUCCESS;          /* requests answered meanwhile reused the result globals */
             g_olen = 0;
@@ -653,8 +654,10 @@ void rtl8188eu_genmac_ioctl(RP_GENIOCTL FAR *rp)
          fast = 0;
    }
    if (!fast) nic_lock();
-   if (!fast && g_hw_ready && !g_scanning)
+   if (!fast && g_hw_ready && !g_scanning) {
       rtl8188eu_led_tick(&g_usbdev);
+      rtl8188eu_dig_tick(&g_usbdev);
+   }
    if (!fast && g_pj && g_hw_ready && !g_scanning && (long)(rtl8188eu_ms() - g_pj_due) >= 0L) {
       g_pj = 0;                                 /* the deferred (re)join, now that the drop has been visible */
       if (!g_joined)
@@ -701,7 +704,10 @@ void rtl8188eu_shutdown(void)
 void rtl8188eu_on_open(void)
 {
    nic_lock();
-   if (g_usbdev.attached && !g_hw_ready && !g_hw_failed)
+   if (g_usbdev.attached && !g_hw_ready && !g_hw_failed) {
+      tcom_always('P'); tcom_always('1');
       rtl8188eu_probe(&g_usbdev);
+      tcom_always('P'); tcom_always('2');
+   }
    nic_unlock();
 }

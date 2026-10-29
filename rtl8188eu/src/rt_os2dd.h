@@ -127,9 +127,20 @@ extern UCHAR  __cdecl rt_tas(UCHAR *p);                  /* atomic exchange with
 extern void   __cdecl rt_atomic_inc(USHORT *p);
 extern void   __cdecl rt_atomic_dec(USHORT *p);
 extern void   __cdecl tcom_always(char c);               /* raw byte to COM1 (debug channel) */
+extern USHORT __cdecl rt_getsp(void);                    /* stack pointer / segment of the caller (diagnostics) */
+extern USHORT __cdecl rt_getss(void);
 extern long   __cdecl rt_imul16(int a, int b);            /* signed 16 x 16 -> 32 */
+extern USHORT __cdecl rt_irq_save(void);                   /* FLAGS, interrupts now disabled */
+extern void   __cdecl rt_irq_restore(USHORT flags);
 extern void   __cdecl rt_cli(void);
 extern void   __cdecl rt_sti(void);
+/* SMP helpers (486+ instructions): CPU identity, owner-tagged locks, bounded spin wait */
+extern USHORT __cdecl rt_cpu_id(void);                     /* initial local APIC id of this CPU */
+extern USHORT __cdecl rt_lock_try(USHORT *p, USHORT id);       /* 0 = taken, 1 = held */
+extern USHORT __cdecl rt_lock_acquire(USHORT *p, USHORT id);   /* spins; 0 = taken, 1 = already held by id */
+extern void   __cdecl rt_lock_release(USHORT *p);
+extern USHORT __cdecl rt_wait_zero(USHORT *p, USHORT rounds);  /* 0 = *p became 0, 1 = timeout */
+extern USHORT __cdecl rt_atomic_dec_nz(USHORT *p);              /* 1 = decremented, 0 = was already 0 */
 
 extern ULONG  rt_devhelp;                                 /* DevHelp entry point (far), set from INIT */
 extern USHORT __cdecl rt_dh_procblock(ULONG id, ULONG timeout, USHORT flag);   /* returns the awake code */
@@ -140,6 +151,9 @@ extern USHORT __cdecl rt_dh_phys_to_gdt(ULONG phys, USHORT len, USHORT sel);    
 extern USHORT __cdecl rt_dh_virt_to_phys(PVOID p, ULONG *phys);                      /* 0 = ok */
 extern USHORT __cdecl rt_dh_getdosvar(USHORT index, USHORT member, PPVOID out);      /* 0 = ok */
 extern USHORT __cdecl rt_dh_attach_dd(char *name, USHORT *table);                      /* 0 = ok; table = 6 words */
+extern USHORT __cdecl rt_dh_alloc_ctxhook(USHORT handler, ULONG *handle);          /* 0 = ok */
+extern USHORT __cdecl rt_dh_arm_ctxhook(ULONG data, ULONG handle);                 /* 0 = armed */
+extern USHORT __cdecl rt_hook_offset(void);                                        /* offset of the hook entry */
 extern void   __cdecl rt_save_message(void *table);                                  /* Save_Message */
 
 /* IDC: call another driver's IDC entry: far entry point, the target's DS, far request packet. */

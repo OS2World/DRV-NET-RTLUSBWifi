@@ -133,6 +133,15 @@ _rt_sti:
         sti
         ret
 
+; USHORT rt_getif(void): 1 when interrupts are enabled (IF), 0 when disabled
+global _rt_getif
+_rt_getif:
+        pushf
+        pop     ax
+        shr     ax, 9
+        and     ax, 1
+        ret
+
 ; ---- DevHelp services --------------------------------------------------------------------------
 ; DL = function code, far call through the entry point handed over in the INIT packet.
 
@@ -414,5 +423,248 @@ _rt_imul16:
         mov     bp, sp
         mov     ax, [bp+4]
         imul    word [bp+6]
+        pop     bp
+        ret
+
+; ---- AllocPhys ---------------------------------------------------------------------------------------
+
+; USHORT rt_dh_alloc_phys(ULONG size, USHORT memtype, ULONG *phys)       PDD "AllocPhys" (18h)
+;   AX:BX = size (high:low), DH = 0 above 1 MB / 1 below; returns AX:BX = physical address. 0 = ok.
+global _rt_dh_alloc_phys
+_rt_dh_alloc_phys:
+        push    bp
+        mov     bp, sp
+        push    si
+        push    di
+        mov     bx, [bp+4]
+        mov     ax, [bp+6]
+        mov     dh, [bp+8]
+        mov     dl, 0x18
+        call    far [_rt_devhelp]
+        jc      .bad
+        mov     si, [bp+10]
+        mov     [si], bx
+        mov     [si+2], ax
+        xor     ax, ax
+        jmp     short .out
+.bad:
+        mov     ax, 1
+.out:
+        pop     di
+        pop     si
+        pop     bp
+        ret
+
+; ---- context hook (task-time work armed from the USB completion callback) ------------------------------
+; PDD "AllocateCtxHook" (63h), "ArmCtxHook" (65h). The handler is entered by the kernel with EAX = the data given to
+; ArmCtxHook and must save and restore every register it uses; it returns far.
+
+; USHORT rt_dh_alloc_ctxhook(USHORT handler, ULONG *handle): EAX = handler offset, EBX = -1; returns the handle in EAX
+global _rt_dh_alloc_ctxhook
+_rt_dh_alloc_ctxhook:
+        push    bp
+        mov     bp, sp
+        push    si
+        push    di
+        movzx   eax, word [bp+4]
+        mov     ebx, 0xFFFFFFFF
+        mov     dl, 0x63
+        call    far [_rt_devhelp]
+        jc      .bad
+        mov     bx, [bp+6]
+        mov     [bx], eax
+        xor     ax, ax
+        jmp     short .out
+.bad:
+        mov     ax, 1
+.out:
+        pop     di
+        pop     si
+        pop     bp
+        ret
+
+; USHORT rt_dh_arm_ctxhook(ULONG data, ULONG handle): EAX = data, EBX = handle, ECX = -1; 0 when armed
+global _rt_dh_arm_ctxhook
+_rt_dh_arm_ctxhook:
+        push    bp
+        mov     bp, sp
+        push    si
+        push    di
+        mov     eax, [bp+4]
+        mov     ebx, [bp+8]
+        mov     ecx, 0xFFFFFFFF
+        mov     dl, 0x65
+        call    far [_rt_devhelp]
+        jc      .bad
+        xor     ax, ax
+        jmp     short .out
+.bad:
+        mov     ax, 1
+.out:
+        pop     di
+        pop     si
+        pop     bp
+        ret
+
+; USHORT rt_hook_offset(void): offset of the hook entry (for AllocateCtxHook)
+global _rt_hook_offset
+_rt_hook_offset:
+        mov     ax, rt_hook_entry
+        ret
+
+extern _ndis_hook_c
+
+; The hook entry: loads the driver's DS, runs the C handler, restores everything.
+rt_hook_entry:
+        pushad
+        push    ds
+        push    es
+        mov     ax, DGROUP
+        mov     ds, ax
+        mov     es, ax
+        cld
+        call    _ndis_hook_c
+        pop     es
+        pop     ds
+        popad
+        retf
+
+; ---- SMP helpers --------------------------------------------------------------------------------------
+; These use 486/Pentium instructions (CMPXCHG, CPUID, PAUSE): every machine that runs an SMP kernel has them.
+; 32-bit registers are saved and restored in full, so callers never see their high halves change.
+
+; USHORT rt_cpu_id(void): initial local APIC id of the CPU running this code (CPUID leaf 1, EBX bits 31..24).
+global _rt_cpu_id
+_rt_cpu_id:
+        push    ebx
+        push    ecx
+        push    edx
+        push    eax
+        mov     eax, 1
+        cpuid
+        shr     ebx, 24
+        pop     eax                             ; restores the high half of EAX; AX is the result
+        mov     ax, bx
+        pop     edx
+        pop     ecx
+        pop     ebx
+        ret
+
+; USHORT rt_irq_save(void): returns FLAGS, then disables interrupts on this CPU
+global _rt_irq_save
+_rt_irq_save:
+        pushf
+        pop     ax
+        cli
+        ret
+
+; void rt_irq_restore(USHORT flags): restores FLAGS (and with it the interrupt flag) saved by rt_irq_save
+global _rt_irq_restore
+_rt_irq_restore:
+        push    bp
+        mov     bp, sp
+        push    word [bp+4]
+        popf
+        pop     bp
+        ret
+
+; USHORT rt_lock_try(USHORT *p, USHORT id): one attempt to change *p from 0 to id (id != 0).
+; Returns 0 when the lock was taken, 1 when it is held (by anyone, including id).
+global _rt_lock_try
+_rt_lock_try:
+        push    bp
+        mov     bp, sp
+        mov     bx, [bp+4]
+        mov     dx, [bp+6]
+        xor     ax, ax
+        lock cmpxchg [bx], dx
+        jz      .got
+        mov     ax, 1
+        pop     bp
+        ret
+.got:
+        xor     ax, ax
+        pop     bp
+        ret
+
+; USHORT rt_lock_acquire(USHORT *p, USHORT id): spin until *p changes from 0 to id. Returns 0 when taken, or 1 at
+; once when *p already holds id (the same CPU re-entered: it must not wait for itself).
+global _rt_lock_acquire
+_rt_lock_acquire:
+        push    bp
+        mov     bp, sp
+        mov     bx, [bp+4]
+        mov     dx, [bp+6]
+.try:
+        xor     ax, ax
+        lock cmpxchg [bx], dx                   ; ZF = 1: taken. ZF = 0: AX = current owner
+        jz      .got
+        cmp     ax, dx
+        je      .self
+        pause
+        jmp     .try
+.got:
+        xor     ax, ax
+        pop     bp
+        ret
+.self:
+        mov     ax, 1
+        pop     bp
+        ret
+
+; void rt_lock_release(USHORT *p): *p = 0 with a locked exchange (full barrier)
+global _rt_lock_release
+_rt_lock_release:
+        push    bp
+        mov     bp, sp
+        mov     bx, [bp+4]
+        xor     ax, ax
+        xchg    ax, [bx]
+        pop     bp
+        ret
+
+; USHORT rt_wait_zero(USHORT *p, USHORT rounds): spin with PAUSE until *p is 0, at most rounds x 65536 passes
+; (rounds >= 1). Memory is read again on every pass. Returns 0 when *p became 0, 1 on timeout.
+global _rt_wait_zero
+_rt_wait_zero:
+        push    bp
+        mov     bp, sp
+        mov     bx, [bp+4]
+        mov     dx, [bp+6]
+.outer:
+        xor     cx, cx
+.inner:
+        cmp     word [bx], 0
+        je      .zero
+        pause
+        loop    .inner                          ; CX = 0 on entry: 65536 passes
+        dec     dx
+        jnz     .outer
+        mov     ax, 1
+        pop     bp
+        ret
+.zero:
+        xor     ax, ax
+        pop     bp
+        ret
+
+; USHORT rt_atomic_dec_nz(USHORT *p): if *p != 0, decrement it atomically and return 1; return 0 when it was 0
+global _rt_atomic_dec_nz
+_rt_atomic_dec_nz:
+        push    bp
+        mov     bp, sp
+        mov     bx, [bp+4]
+.retry:
+        mov     ax, [bx]
+        or      ax, ax
+        jz      .zero
+        mov     dx, ax
+        dec     dx
+        lock cmpxchg [bx], dx
+        jnz     .retry
+        mov     ax, 1
+        pop     bp
+        ret
+.zero:
         pop     bp
         ret

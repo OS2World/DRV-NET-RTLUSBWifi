@@ -1,0 +1,7 @@
+@echo off
+rem STARTUP.CMD for the RTL8821AU driver.
+rem 1. The driver cannot load the dongle firmware by itself at boot: copy it into the driver once per boot.
+copy /b C:\IBMCOM\MACS\RTL8821AU.FW \DEV\WRND32$ > nul
+rem 2. Wireless LAN Monitor variant: the monitor (XWLAN) runs wpa_supplicant itself, so only the address helper
+rem    is started here (it waits until lan1 is connected).
+detach C:\OS2\CMD.EXE /c C:\IBMCOM\RTL88EU\rtl88eu_ip.cmd

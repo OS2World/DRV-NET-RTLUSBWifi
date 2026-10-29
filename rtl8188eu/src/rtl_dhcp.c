@@ -258,7 +258,8 @@ USHORT rtl8188eu_dhcp_read(ULONG phys, USHORT max)
       static char *dgn[DIAG_COUNT] = { "JFAIL", "JAUTH", "JASSOC", "JCH", "JRSSI", "JNNET", "JTRIES", "JWANT", "JBSSF",
                                        "RXFRM", "RXCRC", "RXDESYNC", "RXERR", "TXOK", "TXFAIL", "TXLAST", "TXERR",
                                        "FEEDS", "FMAXN", "FFULL", "DSEV", "MULTI", "PAD8", "DSN",
-                                       "UCTRL", "UPORT", "MPSIN", "MPSO2", "MPSO3", "NEP", "TOME", "EPA", "EPB", "EPC", "EPD", "IQOK", "IQTX", "IQTY", "IQRX", "IQRY", "ACK", "CTL", "TMN", "EVN", "PRSENT", "PRGOT", "RXRUN", "RXFAIL", "RXRC", "RXSTAT", "RXLEN", "RXDONE", "TGLBAD", "TGLRP", "TGLOUT" };
+                                       "UCTRL", "UPORT", "MPSIN", "MPSO2", "MPSO3", "NEP", "TOME", "EPA", "EPB", "EPC", "EPD", "IQOK", "IQTX", "IQTY", "IQRX", "IQRY", "ACK", "CTL", "TMN", "EVN", "PRSENT", "PRGOT", "RXRUN", "RXFAIL", "RXRC", "RXSTAT", "RXLEN", "RXDONE", "TGLBAD", "TGLRP", "TGLOUT", "CBMAX", "CBREC", "SPMIN", "SPMAX", "CBTOT", "HKRUN", "HKMAXQ", "HKARMF", "HKON", "TXBUSY", "TXSUB", "TXCMP", "TXSTAT", "RPNONE", "NDTX", "NDTXFULL", "NDTXFAIL", "TXLKF", "INDLKF", "TXRECL", "NDDROP", "CNCRC", "STALE", "ACCLKF",
+                                       "TXQRE", "CPUTX", "TXQTMO", "INDTMO", "INDRE", "CPURX" };
       USHORT q, k;
 
       for (q = 0; q < DIAG_COUNT; q++) {

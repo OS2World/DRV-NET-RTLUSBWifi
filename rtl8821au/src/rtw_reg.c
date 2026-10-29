@@ -58,46 +58,70 @@ static int reg_write(usb_dev_t *dev, USHORT addr, void *buf, USHORT len)
 UCHAR rtw_read8(usb_dev_t *dev, USHORT addr)
 {
    static UCHAR v;
+   UCHAR r;
+
+   usb_xfer_lock();
    v = 0;
    reg_read(dev, addr, &v, 1);
-   return v;
+   r = v;
+   usb_xfer_unlock();
+   return r;
 }
 
 USHORT rtw_read16(usb_dev_t *dev, USHORT addr)
 {
    static USHORT v;              /* device is little-endian; OS/2 x86 is too  */
+   USHORT r;
+
+   usb_xfer_lock();
    v = 0;
    reg_read(dev, addr, &v, 2);
-   return v;
+   r = v;
+   usb_xfer_unlock();
+   return r;
 }
 
 ULONG rtw_read32(usb_dev_t *dev, USHORT addr)
 {
    static ULONG v;
+   ULONG r;
+
+   usb_xfer_lock();
    v = 0;
    reg_read(dev, addr, &v, 4);
-   return v;
+   r = v;
+   usb_xfer_unlock();
+   return r;
 }
 
 void rtw_write8(usb_dev_t *dev, USHORT addr, UCHAR val)
 {
    static UCHAR v;
+
+   usb_xfer_lock();
    v = val;
    reg_write(dev, addr, &v, 1);
+   usb_xfer_unlock();
 }
 
 void rtw_write16(usb_dev_t *dev, USHORT addr, USHORT val)
 {
    static USHORT v;
+
+   usb_xfer_lock();
    v = val;
    reg_write(dev, addr, &v, 2);
+   usb_xfer_unlock();
 }
 
 void rtw_write32(usb_dev_t *dev, USHORT addr, ULONG val)
 {
    static ULONG v;
+
+   usb_xfer_lock();
    v = val;
    reg_write(dev, addr, &v, 4);
+   usb_xfer_unlock();
 }
 
 /* Multi-byte register write (rtw_writeN) - the firmware-download primitive: one
@@ -106,8 +130,13 @@ void rtw_write32(usb_dev_t *dev, USHORT addr, ULONG val)
  * usb_ctrl_msg copies through the bounce buffer, so no static temp needed. */
 int rtw_writeN(usb_dev_t *dev, USHORT addr, USHORT len, UCHAR *pdata)
 {
-   return usb_ctrl_msg(dev, REALTEK_USB_VENQT_WRITE, REALTEK_USB_VENQT_CMD_REQ,
-                       addr /*wValue*/, 0 /*wIndex*/, pdata, len);
+   int rc;
+
+   usb_xfer_lock();
+   rc = usb_ctrl_msg(dev, REALTEK_USB_VENQT_WRITE, REALTEK_USB_VENQT_CMD_REQ,
+                     addr /*wValue*/, 0 /*wIndex*/, pdata, len);
+   usb_xfer_unlock();
+   return rc;
 }
 
 /* ---- Phase 1 milestone 3: read the chip version ----------------------- */
@@ -340,69 +369,24 @@ static int mac_valid(UCHAR *b)
  * the dongle is attached and the full init has not happened yet; harmless otherwise. */
 int rtl8188eu_early_mac(void)
 {
-   static UCHAR m[6];                             /* static: its address is passed on (SS != DS) */
-   USHORT i;
-   ULONG  ver;
+   ULONG ver;
 
    if (!g_usbdev.attached || g_hw_ready)
       return -1;
-   ver = rtl8188eu_read_chip_version(&g_usbdev);
+   ver = rtw_read32(&g_usbdev, 0x00F0);           /* SYS_CFG: does the control path answer? */
    if (ver == 0 || ver == 0xFFFFFFFFUL)
       return -2;                                  /* USB not serviced (yet): give up quickly */
-   if (rtl8188eu_efuse_mac(&g_usbdev, m) != 0 || !mac_valid(m))
-      return -4;
-   for (i = 0; i < 6; i++)
-      g_mymac[i] = m[i];
+   if (rtl8821_early_power(&g_usbdev) != 0)       /* the eFuse needs the MAC powered */
+      return -3;
+   if (rtl8821_efuse_load(&g_usbdev) != 0 || !g_r21_ef_ok)
+      return -4;                                  /* g_mymac now holds the programmed address */
    tcom('F');
-   for (i = 0; i < 6; i++) tcom_hex8(m[i]);
    return 0;
 }
 
 int rtl8188eu_hw_init(usb_dev_t *dev)
 {
-   static ULONG ver;
-   UCHAR *pv = (UCHAR *)&ver;                 /* little-endian: pv[3]=MSB       */
-
-   tcom('V');
-   ver = rtl8188eu_read_chip_version(dev);
-   tcom('=');
-   tcom_hex8(pv[3]);                          /* MSB first (big-endian display) */
-   tcom_hex8(pv[2]);
-   tcom_hex8(pv[1]);
-   tcom_hex8(pv[0]);
-   tcom(' ');
-
-   if (ver == 0 || ver == 0xFFFFFFFFUL) {
-      tcom('!');                              /* implausible - control path failed */
-      return -1;
-   }
-   tcom('K');                                 /* chip version read OK              */
-
-   /* eFuse MAC first, in the cold state - exactly where the stock driver reads it */
-#if RUN_EFUSE_MAC
-   { static UCHAR m[6]; USHORT q; if (rtl8188eu_efuse_mac(dev, m) == 0 && mac_valid(m)) { tcom('E'); for (q = 0; q < 6; q++) tcom_hex8(m[q]); if (ndis_set_mac(m) != 0) tcom('b'); } else tcom('e'); }
-#endif
-   if (rtl8188eu_init_power_on(dev) != 0)     /* before firmware, per hal_init */
-      return -1;
-   if (rtl8188eu_init_queue(dev) != 0)
-      return -1;
-   if (rtl8188eu_download_fw(dev) != 0)       /* upload rtl8188eufw.bin to the 8051 */
-      return -1;
-   if (rtl8188eu_config_mac(dev) != 0)
-      return -1;
-   if (rtl8188eu_config_bb(dev) != 0)
-      return -1;
-   if (rtl8188eu_config_rf(dev) != 0)
-      return -1;
-   if (rtl8188eu_rx_enable(dev) != 0)         /* LLT + RCR + RX demod + MAC RX/TX enable */
-      return -1;
-   rtl8188eu_iqk(dev);
-   rtl8188eu_tx_prepare(dev);
-
-   dev->attached = 1;
-   g_hw_ready = 1;
-   rtl8188eu_rx_engine_start(dev);            /* always-on async receive loop */
-   return 0;
+   return rtl8821_hw_init(dev);                   /* RTL8821AU port: the phases so far end after the firmware download */
 }
 
 /* Open handler entry: initialise the chip if it is not up yet, then (optionally)
@@ -414,14 +398,8 @@ int rtl8188eu_probe(usb_dev_t *dev)
    if (g_hw_failed)
       return -1;
    if (rtl8188eu_hw_init(dev) != 0) {
-      /* A chip that is still running from an earlier session ("warm") can refuse the normal power-on
-       * and firmware sequence. Power it fully down and try once more from a cold state. */
-      tcom('w');
-      rtl8188eu_card_disable(dev);
-      if (rtl8188eu_hw_init(dev) != 0) {
-         g_hw_failed = 1;
-         return -1;
-      }
+      g_hw_failed = 1;                             /* (no warm-chip retry yet: the 8821 power-off flow is not ported) */
+      return -1;
    }
    return 0;
 }

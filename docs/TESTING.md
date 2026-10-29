@@ -1,35 +1,63 @@
-# RTL88EU 0.1.2 - test record
+# Testing record - preview 0.1.3 (status of 2026-10-28, evening)
 
-Build under test: `bin\RTL88EU.OS2` as tested on the real PCs below: SHA-256
-`bc602af8e431c53e6d0a0feff0766046b12a5ecaa59b7652a18fb245576a1134` (built 2026-10-21 with Open Watcom 2.0.1 and NASM 2.11;
-flags in `BUILD.md`). The shipped binary is a rebuild of the same sources (SHA-256 `090f3cb37ddefd7058ac6320655246013accc811e7945358f327dfb2a8fe80f8`) that differs
-in **two bytes only**: the file-version digit of the BLDLEVEL signature (so `bldlevel` shows 0.1.2) and the build date in the
-banner.
+Tests were run by the author with the driver on real PCs and in VirtualBox. The standard stress test ("soak") is a
+script that repeats: download a 20 MB file from a web server on the development PC over the WiFi link, then send three
+pings; every iteration is logged with its time and the ping loss. A second script (the watchdog) pings the router
+every 3 s and logs a stall after six misses in a row. A run is clean if the machine neither traps nor freezes and no
+stall is logged.
 
-## What was tested
+## Machines
 
-| Setup | Test | Result |
-|---|---|---|
-| VirtualBox, ArcaOS 5.1.1, one CPU, EHCI controller, no dongle attached | boot with the driver | loads without error; `\DEV\WRND32$` answers; NDIS MAC registers with the Protocol Manager |
-| Real PC 1: two EHCI controllers + UHCI, ArcaOS 5.1.1 kernel 14.204 **SMP**, WPA2-PSK access point | boot with WiFi as the only network | associates, 4-way handshake, DHCP lease |
-| | ping | 6 of 6 |
-| | 20 forced re-associations in a row (`wpa_cli reassociate`), each checked for state COMPLETED and the address kept | 20 of 20 (twice) |
-| | sustained download, two CPUs (repeated 20 MB transfers from a local web server + continuous ping) | trapped the TCP/IP modules (`AFINETK` / `SOCKETS`, CPU 1) after 5 to 20 minutes - **also with the 0.1.1 driver** |
-| | the same, one CPU (`PSD=ACPI.PSD /CPUMASK=1`) | 92 complete 20 MB downloads in 50 minutes at 540 to 600 KB/s, no trap, `RXERR=0 TXFAIL=0` |
-| Real PC 2 ("ArcaMiix"): xHCI controller (`USBXHCD`), WiFi only (no USB Ethernet adapter) | boot, join, ping | associates at boot, DHCP lease, ping 5 of 5 |
-| | 20 forced re-associations, address kept each time | 20 of 20 |
-| | 15 minutes of repeated 20 MB downloads + continuous ping | 11 of 11 downloads complete (224 to 686 KB/s), ping loss about 4 % under load, `RXERR=0 TXFAIL=0`, no trap |
+| Name | USB controller | Kernel | Used for |
+|---|---|---|---|
+| ArcaMiix | xHCI (USB 3) | ArcaOS 5.1.1, 14.204 SMP, several logical CPUs | both drivers |
+| PC1 | EHCI (USB 2), also UHCI | 14.204 SMP; `/CPUMASK=1` (one CPU) for some runs | 8821AU |
+| VirtualBox VM | EHCI or xHCI | uniprocessor | development |
 
-## Not yet tested with 0.1.2
+The access point is a WPA2-PSK mesh router on 2.4 GHz channel 1.
 
-* VirtualBox with the dongle attached (xHCI and EHCI controllers; tested with 0.1.1).
-* The `/V` boot messages (message id 1178) and the `/W` pause.
-* Other USB devices (mouse, keyboard, USB Ethernet adapter, hubs) binding to their own drivers with this build loaded
-  (PC 1 boots with its USB devices and the dongle attached).
+## RTL8821AU driver (`RTL8821AU.OS2`)
 
-## How the soak test was run
+| Run | Result |
+|---|---|
+| VM, EHCI: join, DHCP, ping, TCP both ways, 5 forced re-associations | pass (about 170 KB/s, limited by the VM's USB emulation) |
+| ArcaMiix, SMP: 199 downloads of 20 MB (4 GB, 55 min) with ping, development build | pass: no trap, no freeze, 0% ping loss |
+| ArcaMiix, SMP: 450 downloads of 20 MB (1 h 56 min) with ping and watchdog, release build | pass: no trap, no freeze, no stall; 449 of 450 iterations 0% ping loss (one lost 1 of 3); counters: no AP de-authentication, 1 key installation, no lock timeouts |
+| PC1, one CPU: join, 35 downloads | clean (run ended by a reboot to test SMP) |
+| PC1, SMP, **first run after a boot** | **failed**: from the PC, pings and downloads to one WiFi neighbour (the development PC) got no answer, while pings to the router and the internet worked and the neighbour could still reach the PC. Not understood. Counters showed no lock timeouts, and ReceiveChain returned a status other than "success / wait" for about 19% of the frames |
+| PC1, SMP, after a reboot (build that also records the ReceiveChain status codes; same code otherwise) | **383 downloads of 20 MB over 4 h 27 min on two CPUs: 382 iterations with 0% ping loss, one with 33%, no stall, no trap, no freeze.** The machine stayed up until the script ended 1 h 30 min later (the web server on the test PC had stopped; those last iterations only pinged and are not counted) |
 
-A Python web server on the development PC serves a 20 MB random file; a loop on the test PC runs
-`curl.exe -o NUL http://<server>:8000/test20mb.bin` repeatedly over the WiFi interface (wired cable unplugged, so
-the traffic cannot use another interface) while a continuous `ping` runs from the development PC. After each run the
-size and speed are logged. Driver counters are read with `copy \DEV\WRND32$ file`.
+Throughput measured on ArcaMiix: 1.1-1.9 MB/s download. Receiver gain control (see CHANGELOG) fixed a loss of
+sensitivity close to the access point (45% retries at -30 dBm before it).
+
+Problems found and fixed during these runs (all described in CHANGELOG.md): a trap in `SOCKETS` (frames were handed
+to TCP/IP from the USB completion), a complete freeze (a transmit lock that disabled interrupts across a call into
+the USB stack), the access point's de-authentication frames being ignored (a 26-byte frame was rejected as too short),
+and a lost-gain problem near the access point.
+
+## RTL8188EU driver (`RTL88EU.OS2`)
+
+| Run | Result |
+|---|---|
+| 0.1.2 release on PC1, SMP, soak (20 MB downloads + ping) | traps in `AFINETK`/`SOCKETS` within 5-20 minutes, always on CPU 01 (also with 0.1.1) |
+| 0.1.2 release on PC1, **one CPU** (`/CPUMASK=1`), 92 downloads, 50 min | no trap |
+| 0.1.2 release on ArcaMiix, SMP, soak plus `yum`/`rpm` updates on the same link, 2026-10-28 | 43 iterations (about 65 min) clean, then **trap 000E in `AFINETK`**, CPU 01, `CS:EIP 0168:f0b6a9b6`, `CR2 00000014` |
+| **0.1.3 build (this package)** on ArcaMiix, SMP, soak plus `yum`/`rpm` updates over the same link | **189 downloads of 20 MB over 3 h 53 min (with `yum`/`rpm` running for part of it): no trap, no freeze; 152 iterations with 0% ping loss, 34 with 33%, 3 with 66%.** One stall of 18 s at 16:15 that recovered by itself (at that moment every transmit had completed and no lock timeouts were counted). ArcaMiix stayed up and reachable until the script ended nine and a half hours after the start (the test web server had stopped at about 20:00, so the later iterations only pinged). The 0.1.2 driver trapped about 65 minutes into the same load |
+
+## What the counters said (both drivers, new builds)
+
+`TXQTMO` (transmit lock gave up), `INDTMO` (indication wait gave up), `INDDROP`, failed transmits: all 0 in the long
+runs on ArcaMiix. `TXQRE` (a CPU re-entered the transmit lock): 1-3 per run. Both CPUs and more (APIC ids 0-3) were seen
+running the transmit and receive paths.
+
+## Not tested
+
+5 GHz association; WPA3/WEP/open networks (the 8188EU driver connects to WPA2-PSK; others were not exercised);
+more than one dongle at a time; sleep/resume; USB hubs; machines other than those listed.
+
+## Test-rig caveat
+
+The test web server ran on the author's Windows PC, which went to sleep (modern standby) several times in the evening and
+stopped serving at about 20:00. Iterations from then on are not counted above: their downloads timed out after 60 s and
+their pings to that PC often failed because it was asleep. Some of the 33% / 66% ping-loss iterations in the earlier
+hours may also coincide with that PC dozing.

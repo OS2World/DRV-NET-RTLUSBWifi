@@ -64,6 +64,67 @@ USHORT              g_stale;                    /* completions ignored because t
 
 #define TAG_SYNC  0x100UL                 /* requestData1 of a synchronous request: above the async tags */
 
+/* ---- locks ----------------------------------------------------------------------------
+ * Synchronous transfer lock. g_xfer, g_setup and g_databuf exist once. The OID requests (under the request lock),
+ * the device read (DHCP + diagnostics) and the debug channel all do register I/O, and a caller sleeps in ProcBlock
+ * while its transfer runs - so even one CPU interleaves them, and two CPUs do it at any moment. One synchronous
+ * transfer at a time, task time only. */
+#define EVT_XLOCK  0x52544C04UL
+static UCHAR   g_xlock;
+static USHORT  g_xwait;                          /* tasks waiting for the lock (so the unlock only calls ProcRun when needed) */
+
+void usb_xfer_lock(void)
+{
+   while (rt_tas(&g_xlock)) {
+      rt_atomic_inc(&g_xwait);
+      rt_dh_procblock(EVT_XLOCK, 20UL, WAIT_UNINTERRUPTIBLE);   /* short: a ProcRun just before the block is lost */
+      rt_atomic_dec(&g_xwait);
+   }
+}
+
+void usb_xfer_unlock(void)
+{
+   g_xlock = 0;
+   if (g_xwait)
+      rt_dh_procrun(EVT_XLOCK, &g_awake);
+}
+
+/* TX queue lock. Two orders must match what reaches the dongle: the data toggle of consecutive bulk-OUT requests on
+ * one endpoint (EHCI takes it from each request), and the CCMP packet numbers (the access point drops a frame whose
+ * number is not above the last one it accepted). Both are decided and the request submitted under this lock.
+ * Interrupts are NOT masked while it is held (an earlier version did, across the call into USBD, and a machine with an
+ * xHCI controller froze completely under load: a CPU that waits inside USBD for an interrupt it has itself masked, the
+ * other CPUs spinning on this lock). TransmitChain reaches the lock from any CPU; a CPU that already holds it (an
+ * interrupt on top of a sender) gets 0xFFFF at once, and a wait that runs longer than a few milliseconds gives up with
+ * 0xFFFF too: the caller reports "out of resource" and the protocol retries, so nothing can wait forever. */
+static USHORT g_txq_owner;
+USHORT        g_txq_reenter;                     /* diagnostics: attempts by a CPU that already held the lock */
+USHORT        g_txq_tmo;                         /* diagnostics: waits that gave up */
+USHORT        g_cpu_tx;                          /* diagnostics: bit n set = a transmit ran on the CPU with APIC id n (mod 16) */
+
+USHORT usb_txq_lock(void)
+{
+   USHORT id = (USHORT)(rt_cpu_id() + 1), i;
+
+   g_cpu_tx |= (USHORT)(1U << ((id - 1) & 15));
+   for (i = 0; i < 8; i++) {
+      if (!rt_lock_try(&g_txq_owner, id))
+         return 0;                               /* taken */
+      if (g_txq_owner == id) {
+         g_txq_reenter++;
+         return 0xFFFF;
+      }
+      rt_wait_zero(&g_txq_owner, 1);             /* up to 65536 PAUSE passes, then try again */
+   }
+   g_txq_tmo++;
+   return 0xFFFF;
+}
+
+void usb_txq_unlock(USHORT fl)
+{
+   rt_lock_release(&g_txq_owner);
+}
+
 /* ---- one IDC call to USBD ----------------------------------------------------------
  * Every call needs its own request packet. One shared packet is not enough: the task and the completion callback
  * (which re-submits the receive request) call in at the same time, and on an SMP kernel truly in parallel; one
@@ -131,9 +192,14 @@ void usb_unregister_client(void)
 }
 
 /* ---- completion plumbing (submit g_xfer, wait) -------------------------------------- */
-static int usb_submit_wait(void)
+USHORT g_u_acc, g_u_done, g_u_stat, g_u_wait;     /* debug: last synchronous request: ACCIO result, done flag, status, 1 = it timed out */
+
+/* Caller holds usb_xfer_lock. tgl != 0 (bulk OUT): *tgl is the endpoint's toggle; it is applied to the request and
+ * advanced by flip (the parity of the packet count) in the same locked step as the submission, like the async TX
+ * path, so the two paths can share an endpoint. */
+static int usb_submit_wait(UCHAR *tgl, UCHAR flip)
 {
-   USHORT st;
+   USHORT st, fl = 0xFFFF;
 
    g_xfer.done   = 0;
    g_xfer.status = 0;
@@ -145,7 +211,20 @@ static int usb_submit_wait(void)
    g_xfer.rb.usbDS        = rt_getds();
    g_xfer.rb.category     = USB_IDC_CATEGORY_CLIENT;
 
+   if (tgl) {
+      fl = usb_txq_lock();                     /* task time: never held by this CPU already */
+      if (*tgl)
+         g_xfer.rb.flags |= USRB_FLAGS_DET_DTGGLEON;
+   }
    st = usbd_call(USB_IDC_FUNCTION_ACCIO, (PVOID)&g_xfer.rb);
+   if (tgl) {
+      if (!(st & STERR))
+         *tgl ^= flip;
+      if (fl != 0xFFFF)
+         usb_txq_unlock(fl);
+   }
+   g_u_acc = st;
+   g_u_wait = 0;
    if (st & STERR)
       return -1;
 
@@ -155,7 +234,9 @@ static int usb_submit_wait(void)
    if (!g_xfer.done)
       rt_dh_procblock(EVT_XFER, (ULONG)g_xfer_timeout_ms, WAIT_INTERRUPTIBLE);
 
+   g_u_done = g_xfer.done;
    if (!g_xfer.done) {
+      g_u_wait = 1;
       /* Timed out. A bulk request stays queued inside USBD pointing at g_xfer.rb, which the NEXT request would
        * overwrite - so cancel it and wait for its (canceled) completion before returning. (Control: endpoint 0,
        * short-lived, left as it is.) */
@@ -170,10 +251,11 @@ static int usb_submit_wait(void)
       return -1;                       /* timed out / interrupted - no data */
    }
 
+   g_u_stat = (USHORT)g_xfer.status;
    return (g_xfer.status == 0) ? 0 : -1;
 }
 
-/* ---- control transfer ---------------------------------------------------------------- */
+/* ---- control transfer (caller holds usb_xfer_lock: see rtw_reg.c) ---------------------- */
 int usb_ctrl_msg(usb_dev_t *dev, UCHAR bmRequestType, UCHAR bRequest,
                  USHORT wValue, USHORT wIndex, void *pData, USHORT len)
 {
@@ -205,7 +287,7 @@ int usb_ctrl_msg(usb_dev_t *dev, UCHAR bmRequestType, UCHAR bRequest,
    g_xfer.rb.maxPacketSize = USB_DEFAULT_PKT_SIZE;
    g_xfer.rb.maxErrorCount = USB_MAX_ERROR_COUNT;
 
-   rc = usb_submit_wait();
+   rc = usb_submit_wait((UCHAR *)0, 0);
 
    /* IN (device to host): copy the result back only on success, so a failed or timed-out read leaves the
     * caller's buffer untouched (the caller pre-zeros it). */
@@ -266,6 +348,7 @@ int usb_bulk_msg(usb_dev_t *dev, UCHAR endpoint, int dir,
    if (len > sizeof(g_databuf))
       return -1;
 
+   usb_xfer_lock();
    if (dir == USB_DIR_OUT && pData && len)
       rt_movmem((PVOID)g_databuf, (PVOID)pData, len);
 
@@ -276,7 +359,7 @@ int usb_bulk_msg(usb_dev_t *dev, UCHAR endpoint, int dir,
    g_xfer.rb.flags         = (USHORT)(USRB_FLAGS_DET_BULK |
                                 (dir == USB_DIR_IN ? USRB_FLAGS_TTYPE_IN
                                                    : USRB_FLAGS_TTYPE_OUT));
-   if ((dir == USB_DIR_IN ? g_tgl_in : g_tgl_out)[endpoint & 0x0F])
+   if (dir == USB_DIR_IN && g_tgl_in[endpoint & 0x0F])   /* OUT: set in usb_submit_wait, under the TX queue lock */
       g_xfer.rb.flags |= USRB_FLAGS_DET_DTGGLEON;
    g_xfer.rb.buffer1       = (PUCHAR)g_databuf;
    g_xfer.rb.buffer1Length = len;
@@ -286,14 +369,16 @@ int usb_bulk_msg(usb_dev_t *dev, UCHAR endpoint, int dir,
    g_xfer.rb.maxPacketSize = ep_mps(dev, (UCHAR)(endpoint & 0x0F), (UCHAR)(dir == USB_DIR_IN ? 1 : 0));
    g_xfer.rb.maxErrorCount = USB_MAX_ERROR_COUNT;
 
-   rc = usb_submit_wait();
+   if (dir == USB_DIR_OUT)                      /* every packet of the transfer flips the toggle */
+      rc = usb_submit_wait(&g_tgl_out[endpoint & 0x0F], (UCHAR)(tgl_packets(len, g_xfer.rb.maxPacketSize) & 1));
+   else
+      rc = usb_submit_wait((UCHAR *)0, 0);
 
-   if (rc == 0 && dir == USB_DIR_OUT)           /* every packet of the transfer flipped the toggle */
-      g_tgl_out[endpoint & 0x0F] ^= (UCHAR)(tgl_packets(len, g_xfer.rb.maxPacketSize) & 1);
    if (dir == USB_DIR_IN && pData && len)
       rt_movmem((PVOID)pData, (PVOID)g_databuf, len);
    if (pActual)
       *pActual = g_xfer.actual;
+   usb_xfer_unlock();
    return rc;
 }
 
@@ -389,11 +474,22 @@ void __far __cdecl rt_idc(RP_GENIOCTL FAR *pRP)
  * USBD copies the request block at submission, so the statics can be reused as soon as the call returns.
  * Completions arrive through rt_idc (process IRQ) in USBD's context: they must not block, but may submit new
  * requests. Tags in requestData1 route them. */
-#define TAG_RX    1
+#define TAG_RX0   10                  /* RX ring slots: tags 10 .. 10 + RXN - 1; TX slots use 2 .. 2 + USB_TXSLOTS - 1; all below 16 */
 #define TAG_TX0   2
 
 static RT_USBRB g_rxrb;
-static UCHAR    g_rxdata[USB_RXBUF];
+/* One bulk-IN request of up to 2048 bytes is kept queued (resubmitted from its own completion). The VirtualBox USB path
+ * completes only about 200 transfers a second whatever the queue depth (a ring of 4 .. 6 x 512 bytes gave the same
+ * ~60 KB/s; 8 or more outstanding requests stop reception), so each completion has to carry more data: with 2 KB requests
+ * the download rate is about 175 KB/s. The data toggle of the next request is computed from the length received (a
+ * transfer ends with a short or zero-length packet unless it filled the buffer), so only one request can be outstanding.
+ * A frame spanning several requests is reassembled in rtl_rx_feed. Needs a 512-byte bulk endpoint (USB 2.0 high speed). */
+#define RXN       1
+#define RXBUFSZ   2048
+static UCHAR    g_rxring[RXN][RXBUFSZ];
+USHORT          g_rxgap[5];                       /* RX completions by time since the previous one: same ms, 1-2, 3-9, 10-19, 20+ ms */
+static ULONG    g_rx_tprev;
+static UCHAR    g_rx_tgl;                                /* data toggle of the next request to submit */
 static UCHAR    g_rx_ep;
 USHORT          g_rx_run, g_rx_err, g_rx_errtot;
 static USHORT   g_rx_fail, g_rx_lastrc, g_rx_laststat, g_rx_lastn, g_rx_done;   /* receive engine diagnostics */
@@ -413,6 +509,9 @@ USHORT usb_ep_info(USHORT what)
    if (what == 15) return g_rx_done;
    if (what == 16) return g_tgl_bad;
    if (what == 19) return g_rp_none;
+   if (what == 20) return g_txq_reenter;
+   if (what == 21) return g_cpu_tx;
+   if (what == 22) return g_txq_tmo;
    if (what == 17) return (USHORT)((g_tgl_ret << 4) | g_tgl_pred);
    if (what == 18) return (USHORT)((g_tgl_out[2] << 8) | g_tgl_out[3]);
    if (g_usbdev.pDevInfo == 0)
@@ -437,7 +536,10 @@ USHORT usb_ep_info(USHORT what)
    return n;
 }
 
+USHORT g_txlat_avg8, g_txlat_max, g_txlat_n;           /* TX slot busy time in ms: moving average x8, maximum, completions */
+
 typedef struct _txslot {
+   ULONG    t0;                                 /* ms clock at submission */
    RT_USBRB rb;
    UCHAR    busy;
    UCHAR    buf[USB_TXBUF];
@@ -457,8 +559,8 @@ USHORT usb_phys(USHORT i, USHORT half)
       u.l = 0;
       if (i == 0)      a = (PVOID)g_databuf;
       else if (i == 1) a = (PVOID)(g_databuf + sizeof(g_databuf) - 1);
-      else if (i == 2) a = (PVOID)g_rxdata;
-      else if (i == 3) a = (PVOID)(g_rxdata + sizeof(g_rxdata) - 1);
+      else if (i == 2) a = (PVOID)g_rxring[0];
+      else if (i == 3) a = (PVOID)(g_rxring[0] + RXBUFSZ - 1);
       else if (i == 4) a = (PVOID)g_txs[0].buf;
       else             a = (PVOID)(g_txs[0].buf + USB_TXBUF - 1);
       rt_dh_virt_to_phys(a, &u.l);
@@ -466,7 +568,7 @@ USHORT usb_phys(USHORT i, USHORT half)
    return u.w[half ? 1 : 0];
 }
 
-int usb_rx_start(usb_dev_t *dev, UCHAR ep)
+static int rx_submit(usb_dev_t *dev, UCHAR ep, UCHAR idx)
 {
    USHORT st;
 
@@ -475,26 +577,38 @@ int usb_rx_start(usb_dev_t *dev, UCHAR ep)
    g_rxrb.deviceAddress = dev->devAddr;
    g_rxrb.endPointId    = ep;
    g_rxrb.flags         = (USHORT)(USRB_FLAGS_DET_BULK | USRB_FLAGS_TTYPE_IN);
-   if (g_tgl_in[ep & 0x0F])
+   if (g_rx_tgl)
       g_rxrb.flags |= USRB_FLAGS_DET_DTGGLEON;
-   g_rxrb.buffer1       = (PUCHAR)g_rxdata;
-   g_rxrb.buffer1Length = sizeof(g_rxdata);
+   g_rxrb.buffer1       = (PUCHAR)g_rxring[idx];
+   g_rxrb.buffer1Length = RXBUFSZ;
    g_rxrb.serviceTime   = USB_DEFAULT_SRV_INTV;
    g_rxrb.maxPacketSize = ep_mps(dev, ep, 1);
    g_rxrb.maxErrorCount = USB_MAX_ERROR_COUNT;
-   g_rxrb.requestData1  = TAG_RX;
+   g_rxrb.requestData1  = (ULONG)(TAG_RX0 + idx);
    g_rxrb.usbIDC        = idc_addr();
    g_rxrb.usbDS         = rt_getds();
    g_rxrb.category      = USB_IDC_CATEGORY_CLIENT;
-   g_rx_ep  = ep;
-   g_rx_run = 1;
    st = usbd_call(USB_IDC_FUNCTION_ACCIO, (PVOID)&g_rxrb);
    if (st & STERR) {
-      g_rx_run = 0;
       g_rx_fail++;
       g_rx_lastrc = st;
       return -1;
    }
+   return 0;
+}
+
+int usb_rx_start(usb_dev_t *dev, UCHAR ep)
+{
+   UCHAR i;
+
+   g_rx_ep  = ep;
+   g_rx_tgl = g_tgl_in[ep & 0x0F];
+   g_rx_run = 1;
+   for (i = 0; i < RXN; i++)
+      if (rx_submit(dev, ep, i) != 0) {
+         g_rx_run = 0;
+         return -1;
+      }
    return 0;
 }
 
@@ -537,11 +651,14 @@ void usb_tx_reset(void)
    g_tx_busy = 0;
 }
 
-int usb_tx_submit(usb_dev_t *dev, UCHAR ep, USHORT slot, USHORT len)
+/* Queue a filled slot. Caller holds usb_txq_lock (the toggle below must follow the submission order). On failure
+ * the slot is released. */
+int usb_tx_submit_locked(usb_dev_t *dev, UCHAR ep, USHORT slot, USHORT len)
 {
    USHORT    st;
    txslot_t *t = &g_txs[slot];
 
+   t->t0 = rtl8188eu_ms();
    rt_setmem((PVOID)&t->rb, 0, sizeof(t->rb));
    t->rb.controllerId  = dev->ctrlId;
    t->rb.deviceAddress = dev->devAddr;
@@ -568,41 +685,67 @@ int usb_tx_submit(usb_dev_t *dev, UCHAR ep, USHORT slot, USHORT len)
    return 0;
 }
 
+/* Queue a filled slot (frames without a CCMP packet number). -2 = this CPU already holds the TX queue lock. */
+int usb_tx_submit(usb_dev_t *dev, UCHAR ep, USHORT slot, USHORT len)
+{
+   USHORT fl;
+   int    rc;
+
+   fl = usb_txq_lock();
+   if (fl == 0xFFFF) {
+      usb_tx_release(slot);
+      return -2;
+   }
+   rc = usb_tx_submit_locked(dev, ep, slot, len);
+   usb_txq_unlock(fl);
+   return rc;
+}
+
 static void async_complete(RT_USBRB FAR *rb)
 {
    ULONG tag = rb->requestData1;
 
-   if (tag == TAG_RX) {
+   if (tag >= TAG_RX0 && tag < (ULONG)(TAG_RX0 + RXN)) {
+      UCHAR  idx = (UCHAR)(tag - TAG_RX0);
       USHORT n = (USHORT)rb->buffer1Length;
+
+      {
+         ULONG  tn = rtl8188eu_ms();
+         USHORT gp = (USHORT)(tn - g_rx_tprev);
+
+         g_rx_tprev = tn;
+         g_rxgap[gp == 0 ? 0 : gp < 3 ? 1 : gp < 10 ? 2 : gp < 20 ? 3 : 4]++;
+      }
       g_rx_done++;
       g_rx_laststat = (USHORT)rb->status;
       g_rx_lastn = n;
-      if (rb->status == 0) {
-         UCHAR pred = (UCHAR)(g_tgl_in[g_rx_ep & 0x0F] ^ (tgl_packets(n, 512) & 1));
-         UCHAR ret  = (UCHAR)((rb->flags & USRB_FLAGS_DET_DTGGLEON) ? 1 : 0);   /* toggle of the last packet, as the controller saw it */
-
-         g_tgl_pred = pred;
-         g_tgl_ret  = ret;
-         if (ret == pred)                     /* the controller's "last packet" toggle must be the opposite of our next one */
-            g_tgl_bad++;
-         g_tgl_in[g_rx_ep & 0x0F] = pred;
-      }
-      if (rb->status == 0 && n > 0 && n <= USB_RXBUF) {
+      if (rb->status == 0 && n <= RXBUFSZ) {
          g_rx_err = 0;
-         rtl_rx_feed(g_rxdata, n);                  /* parse + hand frames up (no blocking!) */
+         /* packets consumed: n / 512 full ones plus the short (or zero-length) packet that ended the transfer; a request that
+          * filled the whole buffer ended without one */
+         g_rx_tgl ^= (UCHAR)(((n >> 9) + (n < RXBUFSZ ? 1 : 0)) & 1);
+      }
+      if (rb->status == 0 && n > 0 && n <= RXBUFSZ) {
+         rtl_rx_feed(g_rxring[idx], n);               /* parse + hand frames up (no blocking!) */
       } else if (rb->status != 0) {
          g_rx_err++;
          g_rx_errtot++;
       }
-      if (g_rx_run && g_rx_err < 8)
-         usb_rx_start(&g_usbdev, g_rx_ep);          /* keep one IN request outstanding */
-      else if (g_rx_run) {
+      if (g_rx_run && g_rx_err < 8) {
+         if (rx_submit(&g_usbdev, g_rx_ep, idx) != 0)      /* keep the ring full */
+            g_rx_run = 0;
+      } else if (g_rx_run) {
          g_rx_run = 0;
          tcom('!'); tcom('R');                      /* too many errors: engine stopped */
       }
    } else {
       USHORT slot = (USHORT)(tag - TAG_TX0);
       if (slot < USB_TXSLOTS) {
+         USHORT lat = (USHORT)(rtl8188eu_ms() - g_txs[slot].t0);
+
+         g_txlat_n++;
+         g_txlat_avg8 = (USHORT)(g_txlat_avg8 - (g_txlat_avg8 >> 3) + lat);
+         if (lat > g_txlat_max) g_txlat_max = lat;
          if (rb->status != 0)
             g_tx_err++;
          usb_tx_release(slot);

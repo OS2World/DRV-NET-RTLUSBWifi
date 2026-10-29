@@ -1,0 +1,22 @@
+[PROT_MAN]
+
+   DRIVERNAME = PROTMAN$
+
+[IBMLXCFG]
+
+   TCPIP_NIF = TCPIP.NIF
+   MMLEM_NIF = MMLEM.NIF
+   RTL88EU_NIF = RTL88EU.NIF
+
+[TCPIP_NIF]
+
+   DriverName = TCPIP$
+   Bindings = MMLEM_NIF,RTL88EU_NIF
+
+[MMLEM_NIF]
+
+   DriverName = MMLEM$
+
+[RTL88EU_NIF]
+
+   DriverName = WRND32$

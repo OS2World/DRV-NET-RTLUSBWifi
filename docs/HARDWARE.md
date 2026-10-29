@@ -36,3 +36,11 @@ One Android phone hotspot was tried with 0.1: the driver joined it, but the firs
 If you try the driver, a short report helps a lot: ArcaOS/OS/2 version, USB controller (and whether the kernel is
 SMP), dongle brand and USB id, router model and security mode, what worked, and the driver's `/V` boot messages.
 For problems, also a COM1 trace from a `TRACE 1` build (see ARCHITECTURE.md, section 7) is very valuable.
+
+## Added in 0.1.3: TP-Link Archer T2U Nano (RTL8811AU / RTL8821AU)
+
+* USB id `2357:011E`, 802.11ac 1T1R (the driver uses it as 2.4 GHz 802.11g/n, 20 MHz).
+* Endpoints: bulk IN `0x84`, bulk OUT `0x05` / `0x06` / `0x08` / `0x09`, interrupt IN `0x87`. The driver uses one
+  bulk-IN request, bulk OUT `0x08` for data and `0x09` for management frames, and sets bit 4 of register
+  `0xFE55` to 0 (the interrupt-IN endpoint exists; with the bit set the chip sends no receive data).
+* Needs the firmware file `RTL8821AU.FW` (30,880 bytes) copied into the driver after every boot.
