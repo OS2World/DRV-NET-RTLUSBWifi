@@ -128,6 +128,11 @@ void rtl8188eu_dbg_write(ULONG phys, USHORT n)
       if (w == '2')      { rtw_write16(&g_usbdev, a, b); d16(b); }
       else if (w == '4') { c = hexval(&p); u.w[1] = b; u.w[0] = c; rtw_write32(&g_usbdev, a, u.l); d16(b); d16(c); }
       else               { rtw_write8(&g_usbdev, a, (UCHAR)b); d8((UCHAR)b); }
+   } else if (p[0] == 'p' && p[1] == '5') {
+      extern UCHAR g_prefer5;
+      p += 2;
+      g_prefer5 = (UCHAR)hexval(&p);              /* 1 = prefer a 5 GHz access point of the wanted SSID when it is strong enough */
+      tcom_always('5'); d8(g_prefer5);
    } else if (p[0] == 'j' && p[1] == 'o' && p[2] == 'i' && p[3] == 'n') {
       tcom_always('J');
       rtl8188eu_nic_lock();

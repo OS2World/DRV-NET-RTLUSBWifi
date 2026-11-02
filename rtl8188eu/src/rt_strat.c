@@ -36,7 +36,7 @@ static USHORT g_rd_pending;            /* an open handle has not read yet: that 
  *   /W  wait:    pause 30 s after all drivers are loaded so the messages can be read
  *   /AA beeps:   accepted (the driver never beeps)
  * Text goes through Save_Message (message 1178 = "%1"); the strings must be static. */
-#define DRV_VERSION   "0.1.2"
+#define DRV_VERSION   "0.1.4a1"
 #define MSG_REPLACEMENT_STRING  1178
 static struct {
    USHORT id;

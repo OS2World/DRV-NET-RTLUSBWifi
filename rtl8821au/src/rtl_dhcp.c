@@ -299,7 +299,9 @@ USHORT rtl8188eu_dhcp_read(ULONG phys, USHORT max)
       static UCHAR hx2[17] = "0123456789ABCDEF";
 
       put_s("NETS="); put_dec(g_nnet); put_s("\r\n");
-      for (n = 0; n < g_nnet && n < 14; n++) {
+      for (n = 0; n < g_nnet; n++) {
+         if (n >= 14 && g_net[n].ch <= 14)                 /* the text buffer is small: past 14 only the 5 GHz entries */
+            continue;
          put_s("NET=");
          for (q = 0; q < 6; q++) {
             g_hx[0] = hx2[g_net[n].bssid[q] >> 4]; g_hx[1] = hx2[g_net[n].bssid[q] & 15]; g_hx[2] = 0; put_s(g_hx);
@@ -320,7 +322,8 @@ USHORT rtl8188eu_dhcp_read(ULONG phys, USHORT max)
                                        "DNDATA", "DNPROT", "DNSW", "DNDROP", "NTXCALL", "NTXOK", "NTXNOKEY", "NTXNOSLOT", "PTK", "GTK", "JOINED", "NDUP", "DQN", "INDBUSY", "INDOFF", "TXLATAVG", "TXLATMAX", "TXLATN", "NTXARP", "NTXTCP", "NTXACK", "NTXUDP", "NTXICMP", "NTXOTHER",
                                        "XRN", "XRRETRY", "XRRETRYMAX", "XRQAVG", "XRQMAX", "XRRATE", "XROVER", "XRQBIG",
                                        "RXCCK", "RXOFDM6", "RXOFDM18", "RXOFDM36", "RXHT", "RXVHT", "TSFJIT", "TSFN", "XRRTAVG", "XRRTMAX", "ICMPN", "ICMPSTACKAVG", "ICMPSTACKMAX", "RCN", "RCAVG", "RCMAX", "RCSLOW", "IFON", "IFOFF", "RELN", "RELAVG", "RELMAX", "RCWAIT", "RCSUCC", "RCOTHER", "USEHOOK", "HKRUN", "HKMAXQ", "HKARMFAIL", "GAP0", "GAP1_2", "GAP3_9", "GAP10_19", "GAP20", "INDTMO", "INDRE", "INDDROP", "TXQRE", "CPUTX", "CPURX", "KADDP", "KADDG", "KREM", "KDUP", "PN0", "PN1", "DCN", "DC1R", "DC1SUB", "DC1SEC", "DCLR", "DCLSEC", "TXQTMO" ,
-                                       "RCV0", "RCV1", "RCV2", "RCV3", "RCC0", "RCC1", "RCC2", "RCC3", "RCLAST", "RCLEN", "RCET", "RCIPP", "RCDST" };
+                                       "RCV0", "RCV1", "RCV2", "RCV3", "RCC0", "RCC1", "RCC2", "RCC3", "RCLAST", "RCLEN", "RCET", "RCIPP", "RCDST",
+                                       "NTXSTUCK", "TXUNSTICK" };
       USHORT q, k;
 
       for (q = 0; q < DIAG_COUNT; q++) {

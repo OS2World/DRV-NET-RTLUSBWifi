@@ -1644,6 +1644,8 @@ USHORT rtl8188eu_ndis_slot(void)
 {
    USHORT slot = usb_tx_alloc();
 
+   if (slot == 0xFFFF && RT_TX_DROP_STUCK && usb_tx_stuck())
+      return 0xFFFF;                               /* nothing has completed for 2 s: do not spin */
    if (slot == 0xFFFF) {
       ULONG  t0 = rtl8188eu_ms();
       USHORT spin;

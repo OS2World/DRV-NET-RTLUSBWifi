@@ -388,9 +388,12 @@ void   rtl8188eu_dbg_probe(USHORT count, USHORT pad);   /* rtl_rx.c, debug comma
 USHORT ndis_diag(USHORT i);                          /* rt_ndis.c: indication exclusion counters (0 INDTMO, 1 INDRE, 3 CPURX mask) */
 USHORT ndis_stat(USHORT i);                              /* rt_ndis.c: delivery hook counters for the diagnostics */
 int    usb_tx_stuck(void);                       /* rt_usb.c: a transmit request has been in flight for more than 2 s */
+void   usb_tx_reclaim(void);                     /* rt_usb.c: cancel stuck transmit requests (task time only) */
 /* Experiments for the SMP transmit-stall investigation (see docs): 1 = on. */
 #define RT_ACC_LOCK    0   /* serialize every request submission into USBD with interrupts off (made things worse on PC 1) */
-#define RT_TX_RECLAIM  0   /* cancel stuck transmit requests / drop instead of "out of resources" (did not free the slots) */
+#define RT_TX_RECLAIM  1   /* cancel stuck transmit requests from task time (0.1.3 tried it from TransmitChain: did not free the slots) */
+#define RT_TX_DROP_STUCK 1 /* while a transmit request is stuck, drop new frames instead of "out of resources": the protocol
+                            * would retry in a tight loop for as long as the link is dead, which froze the machine */
 #define DIAG_COUNT 85
 void   rtl8188eu_on_detach(void);               /* rtl_rx.c: forget link, keys and queues */
 void   rtl8188eu_nic_lock(void);                 /* rtl_nic.c: the request lock of the OID interface */

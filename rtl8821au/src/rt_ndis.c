@@ -404,8 +404,13 @@ WORD __cdecl ndis_c_transmit(WORD protID, WORD reqHandle, PTCBD pTCBufferD)
       return NDIS_SUCCESS;
    }
    slot = rtl8188eu_ndis_slot();
-   if (slot == 0xFFFF)
+   if (slot == 0xFFFF) {
+      if (rtl8188eu_tx_stuck()) {
+         gSST.trFrHW++;                                  /* the dongle stopped taking frames: drop, never make the */
+         return NDIS_SUCCESS;                            /* protocol retry in a loop (that freezes the machine)    */
+      }
       return NDIS_OUT_OF_RESOURCE;                       /* all transmit slots busy: protocol retries */
+   }
    g = usb_tx_buf(slot) + TX_ETH_OFF;
    if (pTCBufferD->immedLen) {
       if (pTCBufferD->immedLen > MAX_FRAME_SIZE)

@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.1.4a1 (2026-11-02)
+
+Alpha: built from the 0.1.3 sources plus the changes below. Contributions by Paul Smedley (the 5 GHz frequency report and the transmit
+watchdogs, posted on the OS2World forum) and Lars (the firmware `CopyFile` line in the NIF). See PROVENANCE.md.
+
+### RTL8821AU
+* 5 GHz networks are now reported with their real channel frequency (e.g. 5180 MHz for channel 36) and network type
+  `Ndis802_11OFDM5`, both in the scan list (`OID_802_11_BSSID_LIST`) and for the joined network
+  (`OID_802_11_CONFIGURATION`, `OID_802_11_NETWORK_TYPE_IN_USE`). Before, every 5 GHz access point was reported as
+  2.4 GHz channel 1 (2412 MHz), so `wpa_supplicant` could not tell the two bands of a dual-band router apart, its
+  band preference never chose 5 GHz, and `freq_list=` could not select a band.
+* Transmit watchdog. When a frame handed to the dongle has not completed for a second (the dongle has stopped taking
+  frames), new frames are dropped at once instead of the driver waiting for a free slot and then answering "out of
+  resource", which made the TCP/IP stack retry in a tight loop and could freeze the whole machine until the dongle was
+  unplugged. After two seconds the stuck bulk-OUT requests are cancelled from the GenMAC request path (task time), so
+  transmission resumes without unplugging. New counters in the device read-out: `NTXSTUCK` (frames dropped this way)
+  and `TXUNSTICK` (cancels done); a `^` on the debug port marks each cancel.
+
+* The scan table holds 24 access points. The scan visits 2.4 GHz first, so in a crowded neighbourhood the table was full before the
+  5 GHz channels were reached and every 5 GHz access point was dropped silently (for example a router's 5 GHz radio on channel 149). When the table
+  is full, a stronger access point now replaces the weakest one, never one that matches the SSID to join.
+* The NIF has `CopyFile = MACS\RTL8821AU.FW`, so the Network Adapters and Support installer copies the firmware file with the driver.
+* Experimental band preference (`PREFER_5GHZ` in `rt_usb.h`, off): with a dual-band router that uses one SSID on both bands, the driver
+  chooses the access point (the monitor joins by SSID). Switched on, a 5 GHz access point of the SSID wins when its signal is at least
+  -75 dBm and within 10 dB of the best; a failed 5 GHz join falls back to 2.4 GHz at the next attempt. Joining 5 GHz is untested.
+* Debug build only: the read-out lists the 5 GHz entries of the scan table even beyond its first 14 lines; `p5 1` switches the
+  band preference on.
+
+### RTL8188EU
+* The boot message and the BLDLEVEL string say 0.1.4a1 (the 0.1.3 package still said 0.1.2).
+* The same protection. The 0.1.3 driver already had it, switched off (`RT_TX_RECLAIM 0` in `rt_usb.h`), because
+  cancelling the stuck requests from inside TransmitChain did not free the slots; dropping frames while the transmit path
+  is stuck was switched off with it. Dropping now has its own switch, `RT_TX_DROP_STUCK`, which is on, so a stuck
+  transmit path can no longer make the protocol stack retry in a loop. The cancel runs at task time (the GenMAC request
+  path) under the TX queue lock and rewinds the endpoint's data toggle. The existing counters show the effect: `NDDROP`
+  (frames dropped) and `TXRECL` (cancels done).
+
 ## 0.1.3 preview (2026-10-28)
 
 ### New: RTL8821AU driver (TP-Link Archer T2U Nano, `2357:011E`)

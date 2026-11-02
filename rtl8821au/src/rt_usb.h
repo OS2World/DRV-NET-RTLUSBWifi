@@ -372,6 +372,11 @@ USHORT rtl8188eu_ndis_slot(void);                     /* a free TX slot for it (
 int    rtl8188eu_tx_ready(void);                     /* joined with a pairwise key: data frames can be sent */
 extern UCHAR g_ctlrate;                  /* rtl_rx.c */
 void   usb_tx_reset(void);                      /* rt_usb.c: free all TX slots (device detached) */
+USHORT usb_tx_oldest_ms(void);                  /* rt_usb.c: age of the oldest uncompleted bulk-OUT request, 0 = none */
+int    usb_tx_unstick(usb_dev_t *dev, USHORT ms);   /* rt_usb.c: cancel bulk-OUT requests older than ms (task time) */
+int    rtl8188eu_tx_stuck(void);                /* rtl_rx.c: the dongle stopped taking frames: drop, do not wait */
+void   rtl8188eu_tx_watchdog(usb_dev_t *dev);   /* rtl_rx.c: recover a stuck transmit path (task time) */
+extern USHORT g_tx_unstick;
 ULONG  rtl8188eu_ms(void);                      /* rtl_rx.c: milliseconds since boot */
 USHORT rtl8188eu_diag(USHORT i);                /* rtl_rx.c: diagnostic value i (0xFFFF past the end) */
 void   rtl8188eu_diag_set(USHORT reason, USHORT a, USHORT b);
@@ -386,7 +391,8 @@ USHORT rtl8188eu_diag_ev(USHORT n, USHORT which);
 USHORT rtl8188eu_diag_ul(USHORT n, USHORT which);   /* log of unicast frames addressed to us */
 USHORT rtl8188eu_diag_ul_n(void);
 void   rtl8188eu_dbg_probe(USHORT count, USHORT pad);   /* rtl_rx.c, debug command "pr" */
-#define DIAG_COUNT 153
+#define PREFER_5GHZ 0   /* 1 = a 5 GHz access point of the wanted SSID wins when its signal is >= -75 dBm and within 10 dB of the best (experimental: joining 5 GHz is untested) */
+#define DIAG_COUNT 155
 void   rtl8188eu_on_detach(void);               /* rtl_rx.c: forget link, keys and queues */
 void   rtl8188eu_nic_lock(void);                 /* rtl_nic.c: the request lock of the OID interface */
 void   rtl8188eu_nic_unlock(void);

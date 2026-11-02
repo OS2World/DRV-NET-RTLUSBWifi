@@ -349,6 +349,7 @@ static USHORT g_sc[17];
 static USHORT g_ndup;
 static ULONG  g_icmp_t0;                            /* ms clock when the last ICMP echo request reached the protocol stack */
 static USHORT g_ntx_call, g_ntx_ok, g_ntx_nokey, g_ntx_noslot;
+USHORT        g_ntx_stuck;           /* frames dropped because the dongle stopped taking frames (see rtl8188eu_tx_stuck) */
 static USHORT g_ntx_arp, g_ntx_tcp, g_ntx_ack, g_ntx_udp, g_ntx_icmp, g_ntx_other;   /* what the protocol stack sends: ARP / TCP / of which pure ACKs / UDP / ICMP / rest */     /* NDIS transmit path: calls, queued, refused (no join / key), no free slot */
 
 static USHORT g_led_act;                        /* set by data traffic, consumed by rtl8188eu_led_tick */
@@ -443,6 +444,8 @@ static void rx_data_frame(UCHAR *f, USHORT len)
 }
 
 /* One management frame (beacon 0x80 / probe response 0x50): record the network. */
+static int ssid_match(net_t *nt);
+
 static void note_frame(UCHAR *f, USHORT len, signed char rssi)
 {
    UCHAR *ie, *end;
@@ -593,19 +596,39 @@ static void note_frame(UCHAR *f, USHORT len, signed char rssi)
          return;
       }
    }
-   if (g_nnet >= MAXNET)
-      return;
-   for (i = 0; i < 6; i++) g_net[g_nnet].bssid[i] = f[16 + i];
-   g_net[g_nnet].ch  = ch;
-   g_net[g_nnet].sec = sec;
-   g_net[g_nnet].len = slen;
-   g_net[g_nnet].rssi = rssi;
-   for (i = 0; i <= slen; i++) g_net[g_nnet].ssid[i] = ssid[i];
-   g_net[g_nnet].cnt = 1;
-   g_net[g_nnet].ielen = ielim;
+   if (g_nnet >= MAXNET) {
+      /* The table is full. The scan visits 2.4 GHz first, so a crowded 2.4 GHz band used to fill it before the 5 GHz
+       * channels were reached and every 5 GHz access point was dropped. A stronger newcomer now replaces the weakest
+       * entry, but never one that matches the SSID we want to join. */
+      USHORT w = 0xFFFF;
+      int    wr = 127, nr = rssi ? (int)rssi : -120;
+
+      for (k = 0; k < g_nnet; k++) {
+         int r = g_net[k].rssi ? (int)g_net[k].rssi : -120;
+
+         if (ssid_match(&g_net[k]))
+            continue;
+         if (r < wr) {
+            wr = r;
+            w = k;
+         }
+      }
+      if (w == 0xFFFF || nr <= wr)
+         return;
+      k = w;
+   } else {
+      k = g_nnet++;
+   }
+   for (i = 0; i < 6; i++) g_net[k].bssid[i] = f[16 + i];
+   g_net[k].ch  = ch;
+   g_net[k].sec = sec;
+   g_net[k].len = slen;
+   g_net[k].rssi = rssi;
+   for (i = 0; i <= slen; i++) g_net[k].ssid[i] = ssid[i];
+   g_net[k].cnt = 1;
+   g_net[k].ielen = ielim;
    for (i = 0; i < ielim; i++)
-      g_net[g_nnet].ie[i] = f[24 + i];
-   g_nnet++;
+      g_net[k].ie[i] = f[24 + i];
 }
 
 /* Is there a plausible RX descriptor at g_acc[pos]? 1 yes, 0 no, 2 cannot tell yet (bytes missing).
@@ -1217,11 +1240,18 @@ static int ssid_match(net_t *nt)
  * BSS from the last scan (or exactly want_bssid when the supplicant named one). */
 static void keys_reset(usb_dev_t *dev, UCHAR secure);
 
+/* Band preference. A dual-band router often uses one SSID on both bands, and the supplicant joins by SSID, so the choice of
+ * access point is ours. g_prefer5 (debug "p5 1") gives a 5 GHz access point a 10 dB bonus when its signal is at least
+ * -75 dBm. A 5 GHz join that fails switches the bonus off (g_fail5) for the next attempt, so a network that cannot be
+ * joined on 5 GHz still comes up on 2.4 GHz. */
+UCHAR g_prefer5 = PREFER_5GHZ;
+static UCHAR g_fail5;
+
 int rtl8188eu_join(usb_dev_t *dev, UCHAR *want_bssid)
 {
    UCHAR  ep = find_bulk_in_ep(dev);
    USHORT k, best = 0xFFFF, bestcnt = 0, att, r, i;
-   int    bestr = -128;
+   int    bestr = -128, bestsc = -1000, sc, rv;
 
    g_joined = 0;
    g_eqh = g_eqt = g_eqn = 0;
@@ -1243,10 +1273,15 @@ int rtl8188eu_join(usb_dev_t *dev, UCHAR *want_bssid)
          if (!same)
             continue;
       }
-      /* strongest access point wins (unknown level counts as weak) */
-      if (best == 0xFFFF || (g_net[k].rssi ? g_net[k].rssi : -120) > bestr) {
+      /* strongest access point wins (unknown level counts as weak); 5 GHz gets a bonus when preferred */
+      rv = g_net[k].rssi ? (int)g_net[k].rssi : -120;
+      sc = rv;
+      if (g_prefer5 && !g_fail5 && g_net[k].ch > 14 && rv >= -75)
+         sc += 10;
+      if (best == 0xFFFF || sc > bestsc) {
          best = k;
-         bestr = g_net[k].rssi ? g_net[k].rssi : -120;
+         bestr = rv;
+         bestsc = sc;
       }
    }
    tcom_always(10); tcom_always('J');            /* kept in release: join attempt */
@@ -1298,6 +1333,8 @@ int rtl8188eu_join(usb_dev_t *dev, UCHAR *want_bssid)
    g_dg_auth = g_auth_st;
    g_dg_assoc = g_assoc_st;
    if (g_assoc_st != 0) {
+      if (g_net[best].ch > 14)
+         g_fail5 = 1;                                    /* 5 GHz did not work: the next attempt falls back to 2.4 GHz */
       tcom_str(" FAILED"); tcom(10);
       if (g_auth_st == 0xFFFF)       g_dg_reason = 2;      /* the AP never answered the authentication */
       else if (g_auth_st != 0)       g_dg_reason = 3;      /* the AP refused the authentication */
@@ -1309,6 +1346,7 @@ int rtl8188eu_join(usb_dev_t *dev, UCHAR *want_bssid)
       rtw_write8(dev, (USHORT)(0x0618 + i), g_target[i]);         /* BSSID register: the MAC drops other networks' frames */
    rtw_write32(dev, REG_RCR, RX_RCR_LINKED);
    g_dg_reason = 0;
+   g_fail5 = 0;
    for (i = 0; i < 6; i++) g_jbssid[i] = g_target[i];
    for (i = 0; i < 33; i++) g_jssid[i] = (UCHAR)g_net[best].ssid[i];
    g_jslen   = g_net[best].len;
@@ -1496,6 +1534,8 @@ USHORT rtl8188eu_diag(USHORT i)
    if (i == 125) return usb_ep_info(21);
    if (i == 126) return ndis_diag(3);
    if (i >= 140 && i <= 152) return ndis_diag((USHORT)(i - 140 + 4));   /* RCV0-3 RCC0-3 RCLAST RCLEN RCET RCIPP RCDST */
+   if (i == 153) return g_ntx_stuck;
+   if (i == 154) return g_tx_unstick;
    return 0xFFFF;
 }
 
@@ -1903,12 +1943,36 @@ int rtl8188eu_tx_ready(void)
    return g_joined && g_ptk_ok;
 }
 
+/* The transmit path is stuck when a frame queued to the dongle has not completed for TX_STUCK_MS: the dongle has
+ * stopped taking frames, and every free slot will end up queued behind that one. A sender must then drop its frame at
+ * once. Waiting for a slot (rtl8188eu_ndis_slot), or answering "out of resource" so the protocol retries, would keep
+ * the protocol stack busy-looping in TransmitChain for as long as the link stays dead, which freezes the machine. */
+#define TX_STUCK_MS    1000
+#define TX_UNSTICK_MS  2000
+
+int rtl8188eu_tx_stuck(void)
+{
+   return usb_tx_oldest_ms() >= TX_STUCK_MS;
+}
+
+/* Called at task time from the GenMAC request path (the supplicant and the monitor poll it about once a second). */
+void rtl8188eu_tx_watchdog(usb_dev_t *dev)
+{
+   if (usb_tx_unstick(dev, TX_UNSTICK_MS)) {
+      tcom_always('^');                            /* kept in release: stuck transmit requests cancelled */
+   }
+}
+
 /* A free TX slot for an outgoing NDIS frame. All slots in flight: a slot frees within ~3 ms, so wait for it here
  * instead of making the protocol retry in a tight loop. 0xFFFF = none. */
 USHORT rtl8188eu_ndis_slot(void)
 {
    USHORT slot = usb_tx_alloc();
 
+   if (slot == 0xFFFF && rtl8188eu_tx_stuck()) {
+      g_ntx_stuck++;
+      return 0xFFFF;                               /* nothing has completed for a second: do not spin */
+   }
    if (slot == 0xFFFF) {
       ULONG  t0 = rtl8188eu_ms();
       USHORT spin;

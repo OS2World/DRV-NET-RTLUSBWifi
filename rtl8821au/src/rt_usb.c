@@ -542,10 +542,15 @@ typedef struct _txslot {
    ULONG    t0;                                 /* ms clock at submission */
    RT_USBRB rb;
    UCHAR    busy;
+   UCHAR    sent;                               /* queued in USBD (t0, ep and tgl0 are valid) */
+   UCHAR    ep;                                 /* bulk-OUT endpoint it was queued on */
+   UCHAR    tgl0;                               /* data toggle the request started with */
    UCHAR    buf[USB_TXBUF];
 } txslot_t;
 static txslot_t g_txs[USB_TXSLOTS];
 USHORT          g_tx_busy, g_tx_err;
+USHORT          g_tx_unstick;                   /* diagnostics: stuck bulk-OUT endpoints cancelled */
+static RT_USBCANCEL g_txcancel;                 /* cancel block of the TX watchdog (g_cancel belongs to the sync path) */
 
 /* Physical address of the first / last byte of each DMA buffer the USB host controller reads or writes
  * (i: 0/1 control+sync bulk buffer, 2/3 receive buffer, 4/5 first async TX slot; half 1 = high word). If first and
@@ -637,6 +642,7 @@ UCHAR *usb_tx_buf(USHORT slot)
 void usb_tx_release(USHORT slot)
 {
    if (g_txs[slot].busy) {
+      g_txs[slot].sent = 0;
       g_txs[slot].busy = 0;
       rt_atomic_dec(&g_tx_busy);
    }
@@ -646,9 +652,74 @@ void usb_tx_reset(void)
 {
    USHORT i;
 
-   for (i = 0; i < USB_TXSLOTS; i++)
+   for (i = 0; i < USB_TXSLOTS; i++) {
+      g_txs[i].sent = 0;
       g_txs[i].busy = 0;
+   }
    g_tx_busy = 0;
+}
+
+/* Age in ms of the oldest bulk-OUT request that USBD has not completed yet (0 = none in flight). A healthy request
+ * completes in a few ms; one that sits for seconds means the dongle stopped taking frames (its TX FIFO does not drain)
+ * and every later frame queues behind it. Safe from any context: reads only. */
+USHORT usb_tx_oldest_ms(void)
+{
+   ULONG  now = rtl8188eu_ms(), a;
+   USHORT i, m = 0;
+
+   for (i = 0; i < USB_TXSLOTS; i++)
+      if (g_txs[i].busy && g_txs[i].sent) {
+         a = now - g_txs[i].t0;
+         if (a > 60000UL)
+            a = 60000UL;
+         if ((USHORT)a > m)
+            m = (USHORT)a;
+      }
+   return m;
+}
+
+/* TX watchdog, task time only. When a bulk-OUT request has been in flight longer than 'ms', cancel everything queued on
+ * that endpoint: USBD completes the cancelled requests (async_complete releases their slots), so transmission can
+ * resume without the dongle being unplugged. The endpoint's data toggle is rewound to the one the oldest request on it
+ * started with: a request the device never accepted moved no packets, so that is where the device stands. The clock of
+ * each cancelled request is restarted, so one whose completion does not come is cancelled again 'ms' later rather than
+ * at every call. Returns 1 when something was cancelled. */
+int usb_tx_unstick(usb_dev_t *dev, USHORT ms)
+{
+   ULONG  now = rtl8188eu_ms(), oldest;
+   USHORT i, j, fl;
+   UCHAR  ep, tg;
+   int    did = 0;
+
+   if (!dev->attached || usb_tx_oldest_ms() < ms)
+      return 0;
+   fl = usb_txq_lock();                         /* no new submissions (and toggle advances) while we cancel */
+   if (fl == 0xFFFF)
+      return 0;
+   for (i = 0; i < USB_TXSLOTS; i++) {
+      if (!g_txs[i].busy || !g_txs[i].sent || now - g_txs[i].t0 < (ULONG)ms)
+         continue;
+      ep = g_txs[i].ep;
+      tg = g_txs[i].tgl0;
+      oldest = g_txs[i].t0;
+      for (j = 0; j < USB_TXSLOTS; j++)          /* toggle of the oldest request queued on this endpoint */
+         if (g_txs[j].busy && g_txs[j].sent && g_txs[j].ep == ep && (long)(g_txs[j].t0 - oldest) < 0L) {
+            oldest = g_txs[j].t0;
+            tg = g_txs[j].tgl0;
+         }
+      for (j = 0; j < USB_TXSLOTS; j++)          /* the cancel takes every request on the endpoint */
+         if (g_txs[j].busy && g_txs[j].sent && g_txs[j].ep == ep)
+            g_txs[j].t0 = now;
+      g_txcancel.controllerId  = dev->ctrlId;
+      g_txcancel.deviceAddress = dev->devAddr;
+      g_txcancel.endPointId    = ep;
+      usbd_call(USB_IDC_FUNCTION_CANCEL, (PVOID)&g_txcancel);
+      g_tgl_out[ep & 0x0F] = tg;
+      g_tx_unstick++;
+      did = 1;
+   }
+   usb_txq_unlock(fl);
+   return did;
 }
 
 /* Queue a filled slot. Caller holds usb_txq_lock (the toggle below must follow the submission order). On failure
@@ -675,6 +746,9 @@ int usb_tx_submit_locked(usb_dev_t *dev, UCHAR ep, USHORT slot, USHORT len)
    t->rb.usbIDC        = idc_addr();
    t->rb.usbDS         = rt_getds();
    t->rb.category      = USB_IDC_CATEGORY_CLIENT;
+   t->ep               = ep;
+   t->tgl0             = g_tgl_out[ep & 0x0F];
+   t->sent             = 1;                     /* before the call: the completion may run inside it */
    st = usbd_call(USB_IDC_FUNCTION_ACCIO, (PVOID)&t->rb);
    if (st & STERR) {
       usb_tx_release(slot);

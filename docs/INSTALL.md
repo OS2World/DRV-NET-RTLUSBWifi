@@ -36,7 +36,8 @@ Both are built with open-source tools only (Open Watcom + NASM). No IBM code or 
 
 ## Install (TP-Link Archer T2U Nano)
 
-1. Copy `rtl8821au\bin\RTL8821AU.OS2`, `RTL8821AU.FW` and `rtl8821au\install\RTL88EU.NIF` to `C:\IBMCOM\MACS`.
+1. Copy `rtl8821au\bin\RTL8821AU.OS2`, `RTL8821AU.FW` and `rtl8821au\install\RTL88EU.NIF` to `C:\IBMCOM\MACS`
+   (or install through Network Adapters and Support: the NIF copies the firmware file with the driver).
 2. Add `DEVICE=C:\IBMCOM\MACS\RTL8821AU.OS2` to `CONFIG.SYS` (after the USB drivers; add `/V` for boot messages).
 3. Bind the adapter in `C:\IBMCOM\PROTOCOL.INI` as in `install\PROTOCOL.INI.example`
    (an `RTL88EU_NIF = RTL88EU.NIF` entry, a `[RTL88EU_NIF]` section with `DriverName = WRND32$`, and the label in the

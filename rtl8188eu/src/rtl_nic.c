@@ -652,8 +652,12 @@ void rtl8188eu_genmac_ioctl(RP_GENIOCTL FAR *rp)
          fast = 0;
    }
    if (!fast) nic_lock();
-   if (!fast && g_hw_ready && !g_scanning)
+   if (!fast && g_hw_ready && !g_scanning) {
+#if RT_TX_RECLAIM
+      usb_tx_reclaim();                         /* task time: cancel transmit requests the dongle never completed */
+#endif
       rtl8188eu_led_tick(&g_usbdev);
+   }
    if (!fast && g_pj && g_hw_ready && !g_scanning && (long)(rtl8188eu_ms() - g_pj_due) >= 0L) {
       g_pj = 0;                                 /* the deferred (re)join, now that the drop has been visible */
       if (!g_joined)

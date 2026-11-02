@@ -50,6 +50,15 @@ and a lost-gain problem near the access point.
 runs on ArcaMiix. `TXQRE` (a CPU re-entered the transmit lock): 1-3 per run. Both CPUs and more (APIC ids 0-3) were seen
 running the transmit and receive paths.
 
+## 0.1.4a1 alpha (2026-11-02): what has been run
+
+* Both drivers compile and link; the release builds have the debug channel read-only.
+* RTL8821AU (ArcaMiix, SMP kernel, xHCI): the new scan-table code lists the author's dual-band router on 5 GHz channel 149 (-22 dBm) and other 5 GHz
+  access points (channels 36, 48, 149, 161) that were missing before; joined on 2.4 GHz with the transmit-watchdog counters at 0
+  (it never fired). **No soak, no 5 GHz join, no long run of this alpha yet.**
+* RTL8188EU: compiled only; the changed transmit-recovery code (cancel stuck requests at task time) has not been run on hardware.
+* The earlier stall seen on ArcaMiix after a debug full scan was the debug command leaving the radio on another channel, not a driver fault.
+
 ## Not tested
 
 5 GHz association; WPA3/WEP/open networks (the 8188EU driver connects to WPA2-PSK; others were not exercised);

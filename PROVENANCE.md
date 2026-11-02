@@ -24,9 +24,14 @@ copyright holder(s) before publishing.**
    gather. The adopted code was reviewed and then changed substantially while testing (for example the TX lock no
    longer disables interrupts, and the waits are bounded). **The author of the patch and the terms under which it was
    given still have to be established and recorded here** (a GPL-2.0-only compatible grant is needed).
-2. A reviewer other than the code's author should spot-check the files before the project is announced as free of
+2. **Contributed patches in 0.1.4a1 (settled).** Paul Smedley posted three patches on the OS2World forum (2026-11-01): the 5 GHz
+   frequency report and the transmit watchdogs for both drivers. He wrote them against this project's source, so they are
+   modifications of GPL-2.0-only code and are distributed with it under the same licence, GPL-2.0-only (confirmed by the project
+   owner, 2026-11-02). He wrote that they were produced with Claude. Lars suggested the `CopyFile` line of the 8821AU NIF. The
+   copyright line can name the contributors if they wish.
+3. A reviewer other than the code's author should spot-check the files before the project is announced as free of
    IBM material (see the 0.1.2 audit, section "What changed since 0.1.1").
-3. The Realtek firmware images (below) are binary blobs.
+4. The Realtek firmware images (below) are binary blobs.
 
 ## What 0.1.3 adds
 

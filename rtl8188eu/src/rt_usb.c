@@ -590,6 +590,8 @@ USHORT usb_ep_info(USHORT what)
 typedef struct _txslot {
    RT_USBRB rb;
    UCHAR    busy;
+   UCHAR    ep;                                 /* bulk-OUT endpoint it was queued on */
+   UCHAR    tgl0;                               /* data toggle the request started with */
    UCHAR    buf[USB_TXBUF];
 } txslot_t;
 static txslot_t g_txs[USB_TXSLOTS];
@@ -658,9 +660,13 @@ void usb_rx_stop(void)
 
 /* A transmit request that the device never takes (its FIFO stays full, or a completion is lost) keeps its slot busy for
  * ever; with all slots gone the protocol stack is told "out of resources" on every send. usb_tx_stuck() reports a slot that
- * has been in flight for more than TX_STUCK_MS; usb_tx_reclaim() then cancels the transmit endpoints, which makes USBD
+ * has been in flight for more than TX_STUCK_MS; usb_tx_reclaim() then cancels the transmit endpoint, which makes USBD
  * complete the requests with a "cancelled" status, and the completion frees the slots in the normal way (the slot is never
- * reused before its completion arrives, so the request block stays valid). Once per second at most. */
+ * reused before its completion arrives, so the request block stays valid).
+ * usb_tx_reclaim runs at task time only (the GenMAC request path), never inside TransmitChain, under the TX queue lock so
+ * no new request (and toggle advance) can slip in; the endpoint's data toggle is rewound to the one its oldest request
+ * started with (a request the device never accepted moved no packets). Each cancelled request's clock is restarted, so
+ * a request whose completion still does not come is cancelled again TX_STUCK_MS later. */
 int usb_tx_stuck(void)
 {
    ULONG  now = rtl8188eu_ms();
@@ -674,22 +680,39 @@ int usb_tx_stuck(void)
    return 0;
 }
 
-static void usb_tx_reclaim(void)
+void usb_tx_reclaim(void)
 {
-   static ULONG last;
-   ULONG        now = rtl8188eu_ms();
-   UCHAR        ep;
+   ULONG  now = rtl8188eu_ms(), oldest;
+   USHORT i, j, fl;
+   UCHAR  ep, tg;
 
-   if (now == 0 || (long)(now - last) < 1000L || !usb_tx_stuck())
+   if (now == 0 || !g_usbdev.attached || !usb_tx_stuck())
       return;
-   last = now;
-   g_tx_reclaims++;
-   for (ep = 2; ep <= 3; ep++) {
+   fl = usb_txq_lock();
+   if (fl == 0xFFFF)
+      return;
+   for (i = 0; i < USB_TXSLOTS; i++) {
+      if (!g_txs[i].busy || g_tx_t0[i] == 0 || (long)(now - g_tx_t0[i]) <= (long)TX_STUCK_MS)
+         continue;
+      ep = g_txs[i].ep;
+      tg = g_txs[i].tgl0;
+      oldest = g_tx_t0[i];
+      for (j = 0; j < USB_TXSLOTS; j++)          /* toggle of the oldest request queued on this endpoint */
+         if (g_txs[j].busy && g_tx_t0[j] != 0 && g_txs[j].ep == ep && (long)(g_tx_t0[j] - oldest) < 0L) {
+            oldest = g_tx_t0[j];
+            tg = g_txs[j].tgl0;
+         }
+      for (j = 0; j < USB_TXSLOTS; j++)          /* the cancel takes every request on the endpoint */
+         if (g_txs[j].busy && g_tx_t0[j] != 0 && g_txs[j].ep == ep)
+            g_tx_t0[j] = now;
       g_cancel_tx.controllerId  = g_usbdev.ctrlId;
       g_cancel_tx.deviceAddress = g_usbdev.devAddr;
       g_cancel_tx.endPointId    = ep;
       usbd_call(USB_IDC_FUNCTION_CANCEL, (PVOID)&g_cancel_tx);
+      g_tgl_out[ep & 0x0F] = tg;
+      g_tx_reclaims++;
    }
+   usb_txq_unlock(fl);
 }
 
 USHORT usb_tx_alloc(void)
@@ -702,9 +725,6 @@ USHORT usb_tx_alloc(void)
          g_tx_t0[i] = 0;
          return i;
       }
-#if RT_TX_RECLAIM
-   usb_tx_reclaim();
-#endif
    return 0xFFFF;
 }
 
@@ -753,6 +773,8 @@ int usb_tx_submit_locked(usb_dev_t *dev, UCHAR ep, USHORT slot, USHORT len)
    t->rb.usbIDC        = idc_addr();
    t->rb.usbDS         = rt_getds();
    t->rb.category      = USB_IDC_CATEGORY_CLIENT;
+   t->ep               = ep;
+   t->tgl0             = g_tgl_out[ep & 0x0F];
    st = usbd_call(USB_IDC_FUNCTION_ACCIO, (PVOID)&t->rb);
    if (st & STERR) {
       usb_tx_release(slot);

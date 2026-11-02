@@ -136,6 +136,28 @@ static ULONG g_chkhz[15] = {
    2447000UL, 2452000UL, 2457000UL, 2462000UL, 2467000UL, 2472000UL, 2484000UL
 };
 
+/* Centre frequency in kHz of channel 'c': the table for 2.4 GHz, 5000 MHz + 5 MHz per channel number for 5 GHz.
+ * Summed instead of multiplied: there is no C runtime (/nod), so no 32-bit multiply helper. */
+static ULONG ch_khz(UCHAR c)
+{
+   ULONG  f = 5000000UL;
+   USHORT i;
+
+   if (c >= 1 && c <= 14)
+      return g_chkhz[c];
+   if (c < 32 || c > 177)
+      return g_chkhz[1];
+   for (i = 0; i < c; i++)
+      f += 5000UL;
+   return f;
+}
+
+/* NDIS_802_11_NETWORK_TYPE of channel 'c': Ndis802_11OFDM5 (2) on 5 GHz, Ndis802_11OFDM24 (3) on 2.4 GHz */
+static ULONG ch_nettype(UCHAR c)
+{
+   return (c > 14) ? 2UL : 3UL;
+}
+
 /*
  * Build an NDIS_802_11_BSSID_LIST_EX from the scan table into 'out' (room bytes).
  * Layout per entry (116-byte fixed part, then the IEs incl. the 12 fixed beacon
@@ -165,14 +187,12 @@ static USHORT build_bssid_list(UCHAR FAR *out, USHORT room)
          e[16 + i] = (UCHAR)n->ssid[i];
       wr32(e + 48, n->sec ? 1UL : 0UL);                   /* Privacy                */
       wr32(e + 52, (ULONG)(long)(n->rssi ? n->rssi : -80));   /* Rssi (dBm, smoothed from PHY status) */
-      wr32(e + 56, 3UL);                                  /* Ndis802_11OFDM24       */
+      wr32(e + 56, ch_nettype(n->ch));                    /* NetworkTypeInUse       */
       wr32(e + 60, 32UL);                                 /* Configuration.Length   */
       bp = (USHORT)(n->ie[8] | (n->ie[9] << 8));          /* beacon interval        */
       wr32(e + 64, (ULONG)bp);
       c = n->ch;
-      if (c < 1 || c > 14)
-         c = 1;
-      wr32(e + 72, g_chkhz[c]);                           /* DSConfig (kHz)         */
+      wr32(e + 72, ch_khz(c));                            /* DSConfig (kHz), 2.4 or 5 GHz */
       wr32(e + 76, 16UL);                                 /* FHConfig.Length        */
       wr32(e + 92, 1UL);                                  /* Infrastructure         */
       wr32(e + 112, (ULONG)n->ielen);                     /* IELength               */
@@ -421,7 +441,7 @@ static void oid_request(int is_set, ULONG oid, UCHAR FAR *dat, USHORT dlen)
       case ID_G_MAXFRAME: val = 1500UL; goto put4;
       case ID_G_SPEED:    val = g_spd[rtl8188eu_cur_rate() % 12]; goto put4;
       case ID_G_MEDIACONN: val = g_joined ? 0UL : 1UL; goto put4;   /* 0 = connected */
-      case ID_NETTYPE:    val = 3UL; goto put4;                  /* Ndis802_11OFDM24 */
+      case ID_NETTYPE:    val = ch_nettype(g_jch); goto put4;    /* Ndis802_11OFDM5 / OFDM24 */
       case ID_G_VENDID:                                          /* Realtek OUI 00:E0:4C */
          g_olen = 4;
          if (dlen < 4) { g_st = NDIS_STATUS_BUFFER_TOO_SHORT; return; }
@@ -444,7 +464,7 @@ static void oid_request(int is_set, ULONG oid, UCHAR FAR *dat, USHORT dlen)
          rt_setmem((PSZ)dat, 0, 32);
          wr32(dat + 0, 32UL);
          wr32(dat + 4, 100UL);                                   /* beacon period (TU) */
-         wr32(dat + 12, g_chkhz[(g_jch >= 1 && g_jch <= 14) ? g_jch : 1]);   /* DS channel in kHz */
+         wr32(dat + 12, ch_khz(g_jch));                          /* DS channel in kHz, 2.4 or 5 GHz */
          wr32(dat + 16, 16UL);                                   /* FHConfig.Length */
          return;
 
@@ -655,6 +675,7 @@ void rtl8188eu_genmac_ioctl(RP_GENIOCTL FAR *rp)
    }
    if (!fast) nic_lock();
    if (!fast && g_hw_ready && !g_scanning) {
+      rtl8188eu_tx_watchdog(&g_usbdev);
       rtl8188eu_led_tick(&g_usbdev);
       rtl8188eu_dig_tick(&g_usbdev);
    }

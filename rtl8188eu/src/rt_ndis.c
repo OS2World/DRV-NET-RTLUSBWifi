@@ -417,7 +417,7 @@ WORD __cdecl ndis_c_transmit(WORD protID, WORD reqHandle, PTCBD pTCBufferD)
    slot = rtl8188eu_ndis_slot();
    if (slot == 0xFFFF) {
       g_nd_txfull++;
-      if (RT_TX_RECLAIM && usb_tx_stuck()) {
+      if (RT_TX_DROP_STUCK && usb_tx_stuck()) {
          /* The slots are held by requests the device never completed: asking the protocol to retry would only make
           * it retry for ever. Drop the frame (a lossy medium; TCP recovers) while the reclaim frees the slots. */
          g_nd_drop++;

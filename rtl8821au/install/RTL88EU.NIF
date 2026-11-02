@@ -4,6 +4,7 @@ Title = "Realtek RTL8821AU USB WLAN (OS/2 native)"
 Version = 0.1
 DriverName = WRND32$
 Xports = NETBEUI, LANDD
+CopyFile = MACS\RTL8821AU.FW
 
 [File]
 Name = RTL8821AU.OS2
