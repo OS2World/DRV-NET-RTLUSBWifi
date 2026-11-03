@@ -391,7 +391,7 @@ USHORT rtl8188eu_diag_ev(USHORT n, USHORT which);
 USHORT rtl8188eu_diag_ul(USHORT n, USHORT which);   /* log of unicast frames addressed to us */
 USHORT rtl8188eu_diag_ul_n(void);
 void   rtl8188eu_dbg_probe(USHORT count, USHORT pad);   /* rtl_rx.c, debug command "pr" */
-#define PREFER_5GHZ 0   /* 1 = a 5 GHz access point of the wanted SSID wins when its signal is >= -75 dBm and within 10 dB of the best (experimental: joining 5 GHz is untested) */
+#define PREFER_5GHZ 1   /* 1 = a 5 GHz access point of the wanted SSID wins when its signal is >= -65 dBm (10 dB bonus down to -75); a failed 5 GHz join falls back to 2.4 GHz */
 #define DIAG_COUNT 155
 void   rtl8188eu_on_detach(void);               /* rtl_rx.c: forget link, keys and queues */
 void   rtl8188eu_nic_lock(void);                 /* rtl_nic.c: the request lock of the OID interface */

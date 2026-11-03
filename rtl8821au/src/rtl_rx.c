@@ -1241,9 +1241,10 @@ static int ssid_match(net_t *nt)
 static void keys_reset(usb_dev_t *dev, UCHAR secure);
 
 /* Band preference. A dual-band router often uses one SSID on both bands, and the supplicant joins by SSID, so the choice of
- * access point is ours. g_prefer5 (debug "p5 1") gives a 5 GHz access point a 10 dB bonus when its signal is at least
- * -75 dBm. A 5 GHz join that fails switches the bonus off (g_fail5) for the next attempt, so a network that cannot be
- * joined on 5 GHz still comes up on 2.4 GHz. */
+ * access point is ours. 5 GHz reaches 15-20 dB less far than 2.4 GHz from the same router, so a plain "strongest wins" never
+ * picks it: with g_prefer5 (PREFER_5GHZ, debug "p5 N") a 5 GHz access point of the SSID whose signal is at least -65 dBm
+ * wins over any 2.4 GHz one, and one between -75 and -65 dBm gets a 10 dB bonus. A 5 GHz join that fails switches the
+ * preference off (g_fail5) for the next attempt, so a network that cannot be joined on 5 GHz still comes up on 2.4 GHz. */
 UCHAR g_prefer5 = PREFER_5GHZ;
 static UCHAR g_fail5;
 
@@ -1277,7 +1278,7 @@ int rtl8188eu_join(usb_dev_t *dev, UCHAR *want_bssid)
       rv = g_net[k].rssi ? (int)g_net[k].rssi : -120;
       sc = rv;
       if (g_prefer5 && !g_fail5 && g_net[k].ch > 14 && rv >= -75)
-         sc += 10;
+         sc += (rv >= -65) ? 100 : 10;
       if (best == 0xFFFF || sc > bestsc) {
          best = k;
          bestr = rv;

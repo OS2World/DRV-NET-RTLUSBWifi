@@ -61,7 +61,8 @@ tools/       gen_tbl.py                  generator of the RTL8821A register tabl
 
 * Experimental; expect rough edges. On an SMP kernel, long-term stability is limited to what
   [docs/TESTING.md](docs/TESTING.md) records. `PSD=ACPI.PSD /CPUMASK=1` (one CPU) is a safe fallback.
-* RTL8821AU: 2.4 GHz only has been exercised; no HT/VHT rates (802.11g-class throughput, 1-2 MB/s), no per-rate TX power
+* RTL8821AU: 5 GHz joins work on the author's router (channel 149) but have had little testing; no HT/VHT rates (802.11g-class
+  throughput, 1-2 MB/s), no per-rate TX power
   calibration, no power saving, no AP mode. The firmware must be loaded after every boot.
 * No WEP/WPA1, no 802.11w, no WPA3.
 * One unexplained episode on one test machine (8821AU, SMP, first boot): traffic to one WiFi neighbour failed while
