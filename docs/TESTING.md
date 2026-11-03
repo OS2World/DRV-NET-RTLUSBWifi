@@ -60,7 +60,13 @@ running the transmit and receive paths.
   three 20 MB downloads at 1.66-1.72 MB/s.
 * The final release binary of this alpha (debug channel read-only, band preference on, md5 `8c953805...`) chose and joined the channel 149
   access point by itself after a boot (2026-11-03): handshake complete, ping 0% loss, one 20 MB download at 1.71 MB/s.
-  **No soak of this alpha yet.**
+* **Soak of the RTL8821AU alpha (ArcaMiix, SMP kernel, xHCI, joined on 5 GHz channel 149, 2026-11-03):** 449 downloads of 20 MB
+  (9.4 GB) in 1 h 58 min, each followed by three pings. Every download completed in full (no curl error, no short transfer),
+  **all 449 iterations had 0% ping loss**, speed 1.09-2.00 MB/s (median 1.75), no stall logged by the watchdog, no trap, no freeze.
+  Counters at the end: no AP de-authentication, one pairwise and one group key installation, no indication timeouts or drops, no
+  failed transmits, transmit watchdog never fired (`NTXSTUCK` 0, `TXUNSTICK` 0), `TXQTMO` 41 (frames refused by the bounded transmit
+  lock and retried by the stack), both CPUs and more (APIC ids 0-3) ran the transmit and receive paths.
+  **The RTL8188EU alpha has not had a soak.**
 * RTL8188EU: compiled only; the changed transmit-recovery code (cancel stuck requests at task time) has not been run on hardware.
 * The earlier stall seen on ArcaMiix after a debug full scan was the debug command leaving the radio on another channel, not a driver fault.
 
