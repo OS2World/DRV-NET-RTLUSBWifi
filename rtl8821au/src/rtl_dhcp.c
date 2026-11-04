@@ -257,6 +257,25 @@ USHORT rtl8188eu_dhcp_read(ULONG phys, USHORT max)
       g_r21_tried = 1;
       rtl8188eu_probe(&g_usbdev);
    }
+   /* The lease comes first: the diagnostics below can fill g_text, and the address helper needs these lines.
+    * (With the larger 0.1.4 scan table they no longer fitted after the dump and every renewal read as "no lease".) */
+   rc = dh_run();
+   if (rc != 0) {
+      put_s("STATUS=ERR\r\nCODE="); put_dec((USHORT)rc);
+      put_s(rc == 1 ? "\r\nWHY=NOLINK\r\n" : (rc == 2 ? "\r\nWHY=NOTREADY\r\n" : "\r\nWHY=NOANSWER\r\n"));
+   } else {
+      put_s("STATUS=OK\r\nIP=");     put_ip(g_ip);
+      put_s("\r\nSERVER=");          put_ip(g_srv);
+      if (g_have_mask)   { put_s("\r\nMASK=");   put_ip(g_mask); }
+      if (g_have_router) { put_s("\r\nROUTER="); put_ip(g_router); }
+      if (g_have_dns)    { put_s("\r\nDNS=");    put_ip(g_dns); }
+      /* lease time in units of 64 s: (b1 << 10) | (b2 << 2) | (b3 >> 6), capped */
+      if (g_lease[0] != 0 || g_lease[1] >= 0x40)
+         lease64 = 0xFFFF;
+      else
+         lease64 = (USHORT)((g_lease[1] << 10) | (g_lease[2] << 2) | (g_lease[3] >> 6));
+      put_s("\r\nLEASE64="); put_dec(lease64); put_s("\r\n");
+   }
    {  /* RTL8821AU bring-up results */
       static UCHAR hxd[17] = "0123456789ABCDEF";
       static ULONG rv;
@@ -451,23 +470,6 @@ USHORT rtl8188eu_dhcp_read(ULONG phys, USHORT max)
          }
          if ((n & 7) == 7) put_s("\r\n");
       }
-   }
-   rc = dh_run();
-   if (rc != 0) {
-      put_s("STATUS=ERR\r\nCODE="); put_dec((USHORT)rc);
-      put_s(rc == 1 ? "\r\nWHY=NOLINK\r\n" : (rc == 2 ? "\r\nWHY=NOTREADY\r\n" : "\r\nWHY=NOANSWER\r\n"));
-   } else {
-      put_s("STATUS=OK\r\nIP=");     put_ip(g_ip);
-      put_s("\r\nSERVER=");          put_ip(g_srv);
-      if (g_have_mask)   { put_s("\r\nMASK=");   put_ip(g_mask); }
-      if (g_have_router) { put_s("\r\nROUTER="); put_ip(g_router); }
-      if (g_have_dns)    { put_s("\r\nDNS=");    put_ip(g_dns); }
-      /* lease time in units of 64 s: (b1 << 10) | (b2 << 2) | (b3 >> 6), capped */
-      if (g_lease[0] != 0 || g_lease[1] >= 0x40)
-         lease64 = 0xFFFF;
-      else
-         lease64 = (USHORT)((g_lease[1] << 10) | (g_lease[2] << 2) | (g_lease[3] >> 6));
-      put_s("\r\nLEASE64="); put_dec(lease64); put_s("\r\n");
    }
    n = g_tlen;
    if (n > max) n = max;

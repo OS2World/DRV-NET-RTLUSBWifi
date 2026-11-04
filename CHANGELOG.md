@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### RTL8821AU
+* The DHCP lines (`STATUS=`, `IP=`, `MASK=`, ...) come first in the `\DEV\WRND32$` read-out. With the larger scan table
+  of 0.1.4 the diagnostics filled the 3900-byte text buffer, the lease lines were cut off, and `rtl88eu_ip.cmd`
+  logged `no lease:` at every renewal (once even a truncated netmask `255.255`; seen in a forum report, where the
+  read-out was exactly 3898 bytes long).
+
 ## 0.1.4a2 (2026-11-06)
 
 Alpha: 0.1.4a1 plus the changes below. Makefiles contributed by Andy Willis (pull request #2).
