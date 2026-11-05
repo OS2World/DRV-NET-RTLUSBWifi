@@ -54,8 +54,19 @@ running the transmit and receive paths.
 
 * Both drivers compile and link; the release builds have the debug channel read-only.
 * RTL8821AU (ArcaMiix, SMP kernel, xHCI): the new scan-table code lists the author's dual-band router on 5 GHz channel 149 (-22 dBm) and other 5 GHz
-  access points (channels 36, 48, 149, 161) that were missing before; joined on 2.4 GHz with the transmit-watchdog counters at 0
-  (it never fired). **No soak, no 5 GHz join, no long run of this alpha yet.**
+  access points (channels 36, 48, 149, 161) that were missing before; the transmit-watchdog counters stayed at 0 (it never fired).
+* RTL8821AU 5 GHz join (ArcaMiix, 2026-11-03, debug build with the band preference switched on): the router's channel 149
+  access point was chosen, authentication and association worked first time, the WPA2 handshake completed, ping to the router 0% loss,
+  three 20 MB downloads at 1.66-1.72 MB/s.
+* The final release binary of this alpha (debug channel read-only, band preference on, md5 `8c953805...`) chose and joined the channel 149
+  access point by itself after a boot (2026-11-03): handshake complete, ping 0% loss, one 20 MB download at 1.71 MB/s.
+* **Soak of the RTL8821AU alpha (ArcaMiix, SMP kernel, xHCI, joined on 5 GHz channel 149, 2026-11-03):** 449 downloads of 20 MB
+  (9.4 GB) in 1 h 58 min, each followed by three pings. Every download completed in full (no curl error, no short transfer),
+  **all 449 iterations had 0% ping loss**, speed 1.09-2.00 MB/s (median 1.75), no stall logged by the watchdog, no trap, no freeze.
+  Counters at the end: no AP de-authentication, one pairwise and one group key installation, no indication timeouts or drops, no
+  failed transmits, transmit watchdog never fired (`NTXSTUCK` 0, `TXUNSTICK` 0), `TXQTMO` 41 (frames refused by the bounded transmit
+  lock and retried by the stack), both CPUs and more (APIC ids 0-3) ran the transmit and receive paths.
+  **The RTL8188EU alpha has not had a soak.**
 * RTL8188EU: compiled only; the changed transmit-recovery code (cancel stuck requests at task time) has not been run on hardware.
 * The earlier stall seen on ArcaMiix after a debug full scan was the debug command leaving the radio on another channel, not a driver fault.
 

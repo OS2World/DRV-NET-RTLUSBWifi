@@ -66,7 +66,7 @@ with the SMP fixes; the SHA-256 of the file is in `SHA256SUMS`.)
 * **One unexplained episode (8821AU, SMP, first run after a boot):** traffic from the PC to one particular WiFi
   neighbour failed while other destinations worked. It did not come back after a reboot (hundreds of 20 MB downloads
   since). The cause is not understood; see TESTING.md.
-* **8821AU limits:** 2.4 GHz only has been exercised (5 GHz scanning exists, joining a 5 GHz network is untested); no
+* **8821AU limits:** 5 GHz joins work on the author's router (channel 149) but have had little testing, and the driver prefers a strong 5 GHz access point of the same SSID; no
   HT/VHT rates (throughput is 802.11g class, 1-2 MB/s measured); no per-rate TX power calibration from the eFuse; no
   power saving; no AP mode; no WEP/WPA1; no 802.11w.
 * **Wired and WiFi on the same subnet** confuses the routing of any OS/2 machine (replies leave through the wrong

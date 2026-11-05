@@ -22,9 +22,11 @@ watchdogs, posted on the OS2World forum) and Lars (the firmware `CopyFile` line 
   5 GHz channels were reached and every 5 GHz access point was dropped silently (for example a router's 5 GHz radio on channel 149). When the table
   is full, a stronger access point now replaces the weakest one, never one that matches the SSID to join.
 * The NIF has `CopyFile = MACS\RTL8821AU.FW`, so the Network Adapters and Support installer copies the firmware file with the driver.
-* Experimental band preference (`PREFER_5GHZ` in `rt_usb.h`, off): with a dual-band router that uses one SSID on both bands, the driver
-  chooses the access point (the monitor joins by SSID). Switched on, a 5 GHz access point of the SSID wins when its signal is at least
-  -75 dBm and within 10 dB of the best; a failed 5 GHz join falls back to 2.4 GHz at the next attempt. Joining 5 GHz is untested.
+* Band preference (`PREFER_5GHZ` in `rt_usb.h`, on): with a dual-band router that uses one SSID on both bands, the driver chooses the
+  access point (the Wireless LAN Monitor joins by SSID only). 5 GHz reaches 15-20 dB less far than 2.4 GHz, so a plain "strongest
+  wins" never picks it: a 5 GHz access point of the SSID with a signal of -65 dBm or better wins over any 2.4 GHz one, and one between
+  -75 and -65 dBm gets a 10 dB bonus. A failed 5 GHz join falls back to 2.4 GHz at the next attempt. Joining 5 GHz works on the author's setup (WPA2-PSK,
+  channel 149, 1.7 MB/s). Set `PREFER_5GHZ` to 0 and rebuild to always take the strongest access point.
 * Debug build only: the read-out lists the 5 GHz entries of the scan table even beyond its first 14 lines; `p5 1` switches the
   band preference on.
 

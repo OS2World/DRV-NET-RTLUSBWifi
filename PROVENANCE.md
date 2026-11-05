@@ -16,14 +16,13 @@ copyright holder(s) before publishing.**
 
 ## Still to be confirmed before a public announcement
 
-1. **The outside SMP patch.** The SMP work in this release started from a patch file named
-   `rtl88eu-0.1.2-smp.patch` that was supplied to the project from outside. It carries no author, no licence and no
-   date other than the file times. Ideas and code from it were adopted: the assembler helpers in `rt_lib.asm`
+1. **The SMP patch (settled).** The SMP work in this release started from a patch file named `rtl88eu-0.1.2-smp.patch`. The file
+   carries no author or licence header; the project owner states that it was made and approved by Paul Smedley, under the same
+   GPL-2.0-only licence as this project (2026-11-02). Ideas and code from it were adopted: the assembler helpers in `rt_lib.asm`
    (`rt_cpu_id`, the `cmpxchg` lock helpers, `rt_wait_zero`, `rt_atomic_dec_nz`), the owner-tagged indication exclusion in
-   `rt_ndis.c`, the synchronous transfer lock and the TX queue lock design in `rt_usb.c`, and the zero-copy transmit
-   gather. The adopted code was reviewed and then changed substantially while testing (for example the TX lock no
-   longer disables interrupts, and the waits are bounded). **The author of the patch and the terms under which it was
-   given still have to be established and recorded here** (a GPL-2.0-only compatible grant is needed).
+   `rt_ndis.c`, the synchronous transfer lock and the TX queue lock design in `rt_usb.c`, and the zero-copy transmit gather. The
+   adopted code was reviewed and then changed substantially while testing (for example the TX lock no longer disables
+   interrupts, and the waits are bounded).
 2. **Contributed patches in 0.1.4a1 (settled).** Paul Smedley posted three patches on the OS2World forum (2026-11-01): the 5 GHz
    frequency report and the transmit watchdogs for both drivers. He wrote them against this project's source, so they are
    modifications of GPL-2.0-only code and are distributed with it under the same licence, GPL-2.0-only (confirmed by the project
