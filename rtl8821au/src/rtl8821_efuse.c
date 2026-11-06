@@ -21,6 +21,7 @@
 #define EE_MAC             0x107        /* EEPROM_MAC_ADDR_8821AU */
 
 UCHAR  g_r21_ef[EF_MAP_LEN];            /* logical map (0xFF where nothing is programmed) */
+UCHAR  g_mac_late;                      /* 1 = the protocol stack had already bound with another address: the radio uses that one */
 UCHAR  g_r21_ef_ok;                     /* 1 = decoded, 0 = no (or empty) eFuse: defaults in use */
 UCHAR  g_r21_xtal = 0x20;               /* EEPROM_Default_CrystalCap_8812 */
 UCHAR  g_r21_lna2g, g_r21_pa2g;         /* external 2.4 GHz LNA / PA present */
@@ -86,8 +87,14 @@ int rtl8821_efuse_load(usb_dev_t *dev)
       any |= m[i];
       if (m[i] != 0xFF) ff = 0;
    }
-   if (any && !ff && !(m[0] & 1))                 /* a unicast, programmed address */
-      for (i = 0; i < 6; i++) g_mymac[i] = m[i];
+   if (any && !ff && !(m[0] & 1)) {               /* a unicast, programmed address */
+      /* The protocol stack copies the adapter address when it binds, which can happen before the dongle answers (xHCI machines):
+       * it then holds the placeholder address. The radio must use the address the stack holds, or every ARP reply is sent to a
+       * station the access point does not know (DHCP, run by the driver itself, still works: "IP assigned, nothing gets through").
+       * ndis_set_mac sets both addresses while the stack is not bound yet and leaves g_mymac alone after it is. */
+      if (ndis_set_mac(m) != 0)
+         g_mac_late = 1;
+   }
 out:
    efuse_power(dev, 0);
    return rc;

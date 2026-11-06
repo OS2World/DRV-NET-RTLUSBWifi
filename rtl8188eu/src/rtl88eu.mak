@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-only
-# RTL88EU.OS2: Open Watcom WMAKE, 16-bit WCC, NASM, WLINK.
+# RTL88EU.OS2: Open Watcom WMAKE, 16-bit WCC, NASM, WLINK (contributed by Andy Willis).
 #
 # Run from the src directory:
 #   wmake -f rtl88eu.mak
@@ -82,8 +82,8 @@ link: $(OBJS) $(LNKFILE) rtl88eu.mak .SYMBOLIC
 	@echo $(LD) @$(LNKFILE) >> $(LOG)
 	$(LD) @$(LNKFILE) >> $(LOG) 2>&1
 
-# Conservative header dependencies because source contents were not supplied.
-# Add any additional NASM include files to the relevant prerequisites.
+# Conservative header dependencies: every object depends on every header.
+# Add any NASM include files to the relevant prerequisites.
 $(COBJS) $(AOBJS): $(HEADERS) rtl88eu.mak
 
 .EXTENSIONS:

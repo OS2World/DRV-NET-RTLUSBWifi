@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.1.4a2 (2026-11-06)
+
+Alpha: 0.1.4a1 plus the changes below. Makefiles contributed by Andy Willis (pull request #2).
+
+### RTL8821AU
+* The scan table holds 24 access points. The scan visits 2.4 GHz first, so in a crowded neighbourhood the table was full before the
+  5 GHz channels were reached and every 5 GHz access point was dropped silently (for example a router's 5 GHz radio on channel 149). When the table
+  is full, a stronger access point now replaces the weakest one, never one that matches the SSID to join.
+* The NIF has `CopyFile = MACS\RTL8821AU.FW`, so the Network Adapters and Support installer copies the firmware file with the driver.
+* Band preference (`PREFER_5GHZ` in `rt_usb.h`, on): with a dual-band router that uses one SSID on both bands, the driver chooses the
+  access point (the Wireless LAN Monitor joins by SSID only). 5 GHz reaches 15-20 dB less far than 2.4 GHz, so a plain "strongest
+  wins" never picks it: a 5 GHz access point of the SSID with a signal of -65 dBm or better wins over any 2.4 GHz one, and one between
+  -75 and -65 dBm gets a 10 dB bonus. A failed 5 GHz join falls back to 2.4 GHz at the next attempt. Joining 5 GHz works on the author's setup (WPA2-PSK,
+  channel 149, 1.7 MB/s). Set `PREFER_5GHZ` to 0 and rebuild to always take the strongest access point.
+* Debug build only: the read-out lists the 5 GHz entries of the scan table even beyond its first 14 lines; `p5 1` switches the
+  band preference on.
+* **Fix: "IP address assigned, nothing gets through" (reported on the forum, xHCI machine).** The protocol stack copies the adapter
+  address when it binds, which can happen before the dongle answers. It then holds the driver's placeholder address
+  (`02:88:E0:00:00:01`) while the radio used the real address from the dongle's eFuse: the driver's own DHCP worked, but every
+  ARP reply from the router was addressed to a station the access point did not know. The radio now keeps the stack's address in that
+  case, as the 8188EU driver always did. New counter `MACLATE` (1 = that happened). `DBG_LATE_MAC` in `rt_usb.h` (debug builds)
+  forces the case for testing.
+
+### Both drivers
+* Open Watcom `wmake` makefiles: `wmake -f rtl88eu.mak` in `rtl8188eu/src`, `wmake -f rtl8821au.mak` in `rtl8821au/src`. They
+  produce the same binaries as `build.cmd` (byte for byte, apart from the compile date in the boot message). Contributed by
+  Andy Willis.
+* The boot message and the BLDLEVEL string say 0.1.4a2.
+
 ## 0.1.4a1 (2026-11-02)
 
 Alpha: built from the 0.1.3 sources plus the changes below. Contributions by Paul Smedley (the 5 GHz frequency report and the transmit
@@ -17,18 +46,6 @@ watchdogs, posted on the OS2World forum) and Lars (the firmware `CopyFile` line 
   unplugged. After two seconds the stuck bulk-OUT requests are cancelled from the GenMAC request path (task time), so
   transmission resumes without unplugging. New counters in the device read-out: `NTXSTUCK` (frames dropped this way)
   and `TXUNSTICK` (cancels done); a `^` on the debug port marks each cancel.
-
-* The scan table holds 24 access points. The scan visits 2.4 GHz first, so in a crowded neighbourhood the table was full before the
-  5 GHz channels were reached and every 5 GHz access point was dropped silently (for example a router's 5 GHz radio on channel 149). When the table
-  is full, a stronger access point now replaces the weakest one, never one that matches the SSID to join.
-* The NIF has `CopyFile = MACS\RTL8821AU.FW`, so the Network Adapters and Support installer copies the firmware file with the driver.
-* Band preference (`PREFER_5GHZ` in `rt_usb.h`, on): with a dual-band router that uses one SSID on both bands, the driver chooses the
-  access point (the Wireless LAN Monitor joins by SSID only). 5 GHz reaches 15-20 dB less far than 2.4 GHz, so a plain "strongest
-  wins" never picks it: a 5 GHz access point of the SSID with a signal of -65 dBm or better wins over any 2.4 GHz one, and one between
-  -75 and -65 dBm gets a 10 dB bonus. A failed 5 GHz join falls back to 2.4 GHz at the next attempt. Joining 5 GHz works on the author's setup (WPA2-PSK,
-  channel 149, 1.7 MB/s). Set `PREFER_5GHZ` to 0 and rebuild to always take the strongest access point.
-* Debug build only: the read-out lists the 5 GHz entries of the scan table even beyond its first 14 lines; `p5 1` switches the
-  band preference on.
 
 ### RTL8188EU
 * The boot message and the BLDLEVEL string say 0.1.4a1 (the 0.1.3 package still said 0.1.2).

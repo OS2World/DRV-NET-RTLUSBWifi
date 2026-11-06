@@ -373,6 +373,9 @@ int rtl8188eu_early_mac(void)
 
    if (!g_usbdev.attached || g_hw_ready)
       return -1;
+#if DBG_LATE_MAC
+   return -1;
+#endif
    ver = rtw_read32(&g_usbdev, 0x00F0);           /* SYS_CFG: does the control path answer? */
    if (ver == 0 || ver == 0xFFFFFFFFUL)
       return -2;                                  /* USB not serviced (yet): give up quickly */

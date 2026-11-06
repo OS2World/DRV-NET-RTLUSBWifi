@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-only
-# RTL8821AU 0.1.3: Open Watcom WMAKE on OS/2 / ArcaOS.
+# RTL8821AU: Open Watcom WMAKE on OS/2 / ArcaOS (contributed by Andy Willis).
 #
 # Build:          wmake -f rtl8821au.mak
 # Full rebuild:   wmake -a -f rtl8821au.mak
@@ -79,8 +79,8 @@ link: $(OBJS) $(LNKFILE) rtl8821au.mak .SYMBOLIC
 	@echo $(LD) @$(LNKFILE) >> $(LOG)
 	$(LD) @$(LNKFILE) >> $(LOG) 2>&1
 
-# Conservative dependencies because source contents were not supplied.
-# Add additional assembler include files to relevant prerequisites.
+# Conservative dependencies: every object depends on every header.
+# Add any assembler include files to the relevant prerequisites.
 $(COBJS) $(AOBJS): $(HEADERS) rtl8821au.mak
 
 .EXTENSIONS:

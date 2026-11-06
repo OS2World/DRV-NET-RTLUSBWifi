@@ -1537,6 +1537,7 @@ USHORT rtl8188eu_diag(USHORT i)
    if (i >= 140 && i <= 152) return ndis_diag((USHORT)(i - 140 + 4));   /* RCV0-3 RCC0-3 RCLAST RCLEN RCET RCIPP RCDST */
    if (i == 153) return g_ntx_stuck;
    if (i == 154) return g_tx_unstick;
+   if (i == 155) return g_mac_late;
    return 0xFFFF;
 }
 

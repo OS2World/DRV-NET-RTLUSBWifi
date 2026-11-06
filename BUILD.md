@@ -9,7 +9,13 @@ Each driver has its own `src` folder with its own `build.cmd` and `rtl88eu.lnk`:
 * `rtl8188eu\src` builds `RTL88EU.OS2` (use `build_vm.cmd` to compile every file in one go; `build.cmd file ...`
   recompiles only the named files and then links)
 
-## Steps
+## With wmake (contributed by Andy Willis)
+
+In `rtl8188eu\src` run `wmake -f rtl88eu.mak`, in `rtl8821au\src` run `wmake -f rtl8821au.mak` (`wmake -a -f ...` rebuilds
+everything, `wmake -f ... clean` removes the objects). Open Watcom and NASM must be on the `PATH`; the makefiles set `WATCOM`
+and `INCLUDE` themselves. They use the same flags and link file as `build.cmd` and give the same binary.
+
+## Steps with the batch files
 
 1. Put `C:\WATCOM\binp` (Open Watcom OS/2 host tools) and NASM on the `PATH`, set `WATCOM=C:\WATCOM`, and leave
    `INCLUDE` empty (the drivers include none of the Open Watcom headers).

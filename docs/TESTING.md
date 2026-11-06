@@ -50,6 +50,14 @@ and a lost-gain problem near the access point.
 runs on ArcaMiix. `TXQRE` (a CPU re-entered the transmit lock): 1-3 per run. Both CPUs and more (APIC ids 0-3) were seen
 running the transmit and receive paths.
 
+## 0.1.4a2 alpha (2026-11-06): what has been run
+
+* Both drivers build with `build.cmd` and with the new `wmake` makefiles (byte-identical apart from the compile date).
+* The RTL8821AU address fix (radio keeps the stack's address when the stack bound first) is build-tested; the forced late-bind case
+  (`DBG_LATE_MAC`) and a long run with it have not been run on hardware yet. It is the cause identified from a forum report: the
+  adapter's real MAC in the driver read-out differed from the interface MAC shown by `netstat -n`.
+* The 0.1.4a1 results below still stand for the unchanged code (a 449-iteration soak on 5 GHz channel 149).
+
 ## 0.1.4a1 alpha (2026-11-02): what has been run
 
 * Both drivers compile and link; the release builds have the debug channel read-only.

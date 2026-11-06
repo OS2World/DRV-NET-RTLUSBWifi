@@ -23,7 +23,8 @@ copyright holder(s) before publishing.**
    `rt_ndis.c`, the synchronous transfer lock and the TX queue lock design in `rt_usb.c`, and the zero-copy transmit gather. The
    adopted code was reviewed and then changed substantially while testing (for example the TX lock no longer disables
    interrupts, and the waits are bounded).
-2. **Contributed patches in 0.1.4a1 (settled).** Paul Smedley posted three patches on the OS2World forum (2026-11-01): the 5 GHz
+2. **Contributed patches in 0.1.4a1 and 0.1.4a2 (settled).** Andy Willis contributed the `wmake` makefiles (pull request #2, 2026-11-06; the files
+   carry an SPDX `GPL-2.0-only` header). Paul Smedley posted three patches on the OS2World forum (2026-11-01): the 5 GHz
    frequency report and the transmit watchdogs for both drivers. He wrote them against this project's source, so they are
    modifications of GPL-2.0-only code and are distributed with it under the same licence, GPL-2.0-only (confirmed by the project
    owner, 2026-11-02). He wrote that they were produced with Claude. Lars suggested the `CopyFile` line of the 8821AU NIF. The

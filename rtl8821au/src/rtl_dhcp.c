@@ -323,7 +323,7 @@ USHORT rtl8188eu_dhcp_read(ULONG phys, USHORT max)
                                        "XRN", "XRRETRY", "XRRETRYMAX", "XRQAVG", "XRQMAX", "XRRATE", "XROVER", "XRQBIG",
                                        "RXCCK", "RXOFDM6", "RXOFDM18", "RXOFDM36", "RXHT", "RXVHT", "TSFJIT", "TSFN", "XRRTAVG", "XRRTMAX", "ICMPN", "ICMPSTACKAVG", "ICMPSTACKMAX", "RCN", "RCAVG", "RCMAX", "RCSLOW", "IFON", "IFOFF", "RELN", "RELAVG", "RELMAX", "RCWAIT", "RCSUCC", "RCOTHER", "USEHOOK", "HKRUN", "HKMAXQ", "HKARMFAIL", "GAP0", "GAP1_2", "GAP3_9", "GAP10_19", "GAP20", "INDTMO", "INDRE", "INDDROP", "TXQRE", "CPUTX", "CPURX", "KADDP", "KADDG", "KREM", "KDUP", "PN0", "PN1", "DCN", "DC1R", "DC1SUB", "DC1SEC", "DCLR", "DCLSEC", "TXQTMO" ,
                                        "RCV0", "RCV1", "RCV2", "RCV3", "RCC0", "RCC1", "RCC2", "RCC3", "RCLAST", "RCLEN", "RCET", "RCIPP", "RCDST",
-                                       "NTXSTUCK", "TXUNSTICK" };
+                                       "NTXSTUCK", "TXUNSTICK", "MACLATE" };
       USHORT q, k;
 
       for (q = 0; q < DIAG_COUNT; q++) {
