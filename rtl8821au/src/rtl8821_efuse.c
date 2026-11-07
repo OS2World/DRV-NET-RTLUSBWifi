@@ -17,6 +17,7 @@
 #define EE_THERMAL         0xBA
 #define EE_PA_TYPE         0xBC         /* EEPROM_PA_TYPE_8821AU */
 #define EE_LNA_2G          0xBD         /* EEPROM_LNA_TYPE_2G_8812AU */
+#define EE_LNA_5G          0xBF         /* EEPROM_LNA_TYPE_5G_8812AU */
 #define EE_RFE             0xCA         /* EEPROM_RFE_OPTION_8812 */
 #define EE_MAC             0x107        /* EEPROM_MAC_ADDR_8821AU */
 
@@ -25,6 +26,7 @@ UCHAR  g_mac_late;                      /* 1 = the protocol stack had already bo
 UCHAR  g_r21_ef_ok;                     /* 1 = decoded, 0 = no (or empty) eFuse: defaults in use */
 UCHAR  g_r21_xtal = 0x20;               /* EEPROM_Default_CrystalCap_8812 */
 UCHAR  g_r21_lna2g, g_r21_pa2g;         /* external 2.4 GHz LNA / PA present */
+UCHAR  g_r21_lna5g, g_r21_pa5g;         /* external 5 GHz LNA / PA present (hal_ReadPAType_8821A); told to the firmware IQK */
 UCHAR  g_r21_rfe, g_r21_thermal = 0xFF;
 USHORT g_r21_ef_used;                   /* physical bytes consumed by the records */
 
@@ -79,6 +81,8 @@ int rtl8821_efuse_load(usb_dev_t *dev)
    g_r21_thermal = g_r21_ef[EE_THERMAL];
    g_r21_pa2g  = (UCHAR)((g_r21_ef[EE_PA_TYPE] != 0xFF && (g_r21_ef[EE_PA_TYPE] & 0x10)) ? 1 : 0);
    g_r21_lna2g = (UCHAR)((g_r21_ef[EE_LNA_2G] != 0xFF && (g_r21_ef[EE_LNA_2G] & 0x08)) ? 1 : 0);
+   g_r21_pa5g  = (UCHAR)((g_r21_ef[EE_PA_TYPE] != 0xFF && (g_r21_ef[EE_PA_TYPE] & 0x01)) ? 1 : 0);
+   g_r21_lna5g = (UCHAR)((g_r21_ef[EE_LNA_5G] != 0xFF && (g_r21_ef[EE_LNA_5G] & 0x08)) ? 1 : 0);
    g_r21_rfe   = g_r21_ef[EE_RFE];
    any = 0;
    ff = 1;

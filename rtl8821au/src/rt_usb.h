@@ -450,6 +450,13 @@ extern ULONG  g_r21_chk[8];
 #define R21_TXP5  1     /* 1 = 5 GHz transmit power from the eFuse (rtl8821_phy.c); 0 = BB table values on both bands */
 void   rtl8821_txpower_set(usb_dev_t *dev, UCHAR on);   /* debug "txp N" */
 extern UCHAR  g_r21_txp5, g_r21_txp_ofdm, g_r21_txp_ht, g_r21_txp_grp;
+#define R21_IQK   1     /* firmware IQ calibration after a join: 0 = off, 1 = 5 GHz joins only, 2 = every join */
+void   rtl8821_iqk(usb_dev_t *dev, UCHAR ch);     /* rtl8821_phy.c: H2C 0x45, waits up to 500 ms for C2H 0x11 */
+void   rtl8821_iqk_set(usb_dev_t *dev, UCHAR mode);   /* debug "iqk N" */
+extern UCHAR  g_r21_iqk, g_r21_iqk_c2h, g_r21_pa5g, g_r21_lna5g;
+extern volatile UCHAR g_r21_iqk_done;
+extern ULONG  g_r21_iqc[6];
+extern USHORT g_r21_h2c_busy;
 
 /* The resident-end markers (rt_code_end / rt_data_end) are in rt_end.asm, linked last. */
 

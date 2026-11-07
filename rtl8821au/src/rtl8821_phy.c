@@ -639,6 +639,8 @@ void rtl8821_lck(usb_dev_t *dev)
 USHORT g_r21_hold;                                                       /* 1 = the background scan does nothing (experiments) */
 USHORT g_r21_norx = 0;                                                   /* 1 = do not start the async receive engine at init (debug) */
 
+static UCHAR g_h2c_box;                  /* next firmware command box (r21_h2c below); 0 after a firmware load */
+
 int rtl8821_phy_init(usb_dev_t *dev)
 {
    USHORT i;
@@ -646,6 +648,7 @@ int rtl8821_phy_init(usb_dev_t *dev)
    g_r21_phy_stage = 0;
    g_r21_txp_ofdm = 0;                                                   /* the BB table below sets the power registers again */
    g_r21_txp_ht = 0;
+   g_h2c_box = 0;                                                        /* the firmware was just loaded: it starts at box 0 */
    rtl8821_efuse_load(dev);                                              /* crystal trim, PA / LNA flags, MAC address */
    for (i = 0; i < g_r21_mac_n; i++)                                     /* PHY_MACConfig8812 */
       rtw_write8(dev, g_r21_mac_tbl[i].a, g_r21_mac_tbl[i].v);
@@ -694,8 +697,104 @@ int rtl8188eu_card_disable(usb_dev_t *dev)
    return 0;
 }
 
+/* ---- firmware commands (H2C) ------------------------------------------------------------------------------
+ * fill_h2c_cmd_8812 (rtl8812a_cmd.c, CONFIG_H2C_EF): four mailboxes, used in turn. A box is free when its bit in
+ * REG_HMETFR is clear (the firmware clears it when it has read the command). The extension box (0x1F0 + 4 * n, bytes 4-7
+ * of a longer command) is written first, then the box itself (0x1D0 + 4 * n): byte 0 = command id, bytes 1-3 = data.
+ * Byte writes, as the Linux driver does them. Task time only. */
+#define REG_HMETFR       0x01CC
+#define REG_HMEBOX_0     0x01D0
+#define REG_HMEBOX_EXT0  0x01F0
+
+USHORT        g_r21_h2c_busy;                    /* commands dropped because the box stayed busy */
+
+static int r21_h2c(usb_dev_t *dev, UCHAR id, UCHAR b1, UCHAR b2, UCHAR b3)
+{
+   UCHAR  box = g_h2c_box, bit = (UCHAR)(1 << box);
+   USHORT n, mb = (USHORT)(REG_HMEBOX_0 + (box << 2)), xb = (USHORT)(REG_HMEBOX_EXT0 + (box << 2));
+
+   for (n = 0; n < 100 && (rtw_read8(dev, REG_HMETFR) & bit); n++)
+      usb_mdelay(1);
+   if (n >= 100) {
+      g_r21_h2c_busy++;
+      return -1;
+   }
+   for (n = 0; n < 4; n++)
+      rtw_write8(dev, (USHORT)(xb + n), 0);
+   rtw_write8(dev, mb, id);
+   rtw_write8(dev, (USHORT)(mb + 1), b1);
+   rtw_write8(dev, (USHORT)(mb + 2), b2);
+   rtw_write8(dev, (USHORT)(mb + 3), b3);
+   g_h2c_box = (UCHAR)((box + 1) & 3);
+   return 0;
+}
+
+/* ---- IQ calibration, run by the firmware ----------------------------------------------------------------------
+ * For an 8821A without Bluetooth coexistence the Linux driver does not calibrate on the host: rtl8812_init_dm_priv sets
+ * RegIQKFWOffload, and phy_iq_calibrate_8821a then sends H2C 0x45 (_phy_iq_calibrate_by_fw_8821a) and waits up to 500 ms
+ * for the firmware's C2H 0x11 (IQK_FINISH, seen by rx_c2h in rtl_rx.c). The firmware writes the TX / RX IQ correction
+ * itself. Command data: channel; band in bits 5:4 (1 = 2.4 GHz, 2 = 5 GHz) and bandwidth in bits 3:0 (1 = 20 MHz);
+ * external 5 GHz PA (bit 0) and LNA (bit 1). RTL8821AU.FW is the non-Bluetooth image (30880 bytes, Realtek's
+ * array_mp_8821a_fw_nic), the one Linux uses this way.
+ * Run after the join has tuned to the access point's channel (Linux sets bNeedIQK on a join, rtw_mlme_ext.c).
+ * R21_IQK in rt_usb.h, debug "iqk N": 0 = off, 1 = 5 GHz joins only (2.4 GHz works without it), 2 = every join.
+ * The read-out shows the correction registers before and after: 0xC10 (RX), and 0xCCC / 0xCD4 on BB page C1 (TX);
+ * phy_reset_iqk_result_8821a gives their "no correction" values (0xC10[9:0] 0x100, 0xCCC[10:0] 0, 0xCD4[10:0] 0x200). */
+UCHAR          g_r21_iqk = R21_IQK;
+volatile UCHAR g_r21_iqk_done;                   /* set by the C2H IQK_FINISH report */
+UCHAR          g_r21_iqk_c2h = 0xFF;             /* its first data byte */
+USHORT         g_r21_iqk_sent, g_r21_iqk_ok, g_r21_iqk_tmo, g_r21_iqk_ms, g_r21_iqk_ch;
+ULONG          g_r21_iqc[6];                     /* before: 0xC10, 0xCCC, 0xCD4; after: the same (0xFFFFFFFF = not read) */
+
+static void r21_iqc_read(usb_dev_t *dev, ULONG *r)
+{
+   r[0] = rtw_read32(dev, 0x0C10);
+   bb_set(dev, 0x082C, 0x80000000UL, 1UL);       /* BB page C1 */
+   r[1] = rtw_read32(dev, 0x0CCC);
+   r[2] = rtw_read32(dev, 0x0CD4);
+   bb_set(dev, 0x082C, 0x80000000UL, 0UL);       /* back to page C */
+}
+
+void rtl8821_iqk(usb_dev_t *dev, UCHAR ch)
+{
+   ULONG  t0;
+   USHORT n;
+
+   if (g_r21_iqk == 0 || (g_r21_iqk == 1 && ch <= 14))
+      return;
+   r21_iqc_read(dev, &g_r21_iqc[0]);
+   g_r21_iqc[3] = g_r21_iqc[4] = g_r21_iqc[5] = 0xFFFFFFFFUL;
+   g_r21_iqk_done = 0;
+   g_r21_iqk_c2h = 0xFF;
+   g_r21_iqk_ch = ch;
+   if (r21_h2c(dev, 0x45, ch, (UCHAR)((ch > 14 ? 0x20 : 0x10) | 0x01), (UCHAR)(g_r21_pa5g | (g_r21_lna5g << 1))) != 0)
+      return;
+   g_r21_iqk_sent++;
+   t0 = rtl8188eu_ms();
+   for (n = 0; n < 100 && !g_r21_iqk_done; n++)  /* up to 500 ms, as phydm_iqk_wait */
+      usb_mdelay(5);
+   g_r21_iqk_ms = (USHORT)(rtl8188eu_ms() - t0);
+   if (!g_r21_iqk_done) {
+      g_r21_iqk_tmo++;                           /* the firmware may still be calibrating: leave BB page select alone */
+      return;
+   }
+   g_r21_iqk_ok++;
+   r21_iqc_read(dev, &g_r21_iqc[3]);
+}
+
+void rtl8821_iqk_set(usb_dev_t *dev, UCHAR mode)  /* debug "iqk N": set the mode and run it on the current channel */
+{
+   g_r21_iqk = mode;
+   rtl8821_iqk(dev, (UCHAR)g_r21_channel);
+}
+
+/* Read-out lines IQOK / IQTX / IQTY / IQRX / IQRY (rtl_dhcp.c). */
 USHORT rtl8188eu_iqk_info(USHORT i)
 {
-   (void)i;                                      /* IQ calibration is not run yet */
+   if (i == 0) return g_r21_iqk_ok;              /* IQOK: calibrations the firmware reported finished */
+   if (i == 1) return g_r21_iqk_sent;            /* IQTX: commands sent */
+   if (i == 2) return g_r21_iqk_tmo;             /* IQTY: no finish report within 500 ms */
+   if (i == 3) return g_r21_iqk_ms;              /* IQRX: duration of the last one, ms */
+   if (i == 4) return g_r21_iqk_ch;              /* IQRY: its channel */
    return 0;
 }

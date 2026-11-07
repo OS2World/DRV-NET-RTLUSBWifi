@@ -25,6 +25,7 @@
  *   e A N           read N physical efuse bytes from address A with the stock byte sequence
  *   init            run the full chip initialisation now
  *   txp 1|0         5 GHz transmit power from the eFuse / BB table values (applied to the current channel)
+ *   iqk 0|1|2       firmware IQ calibration off / on 5 GHz joins / on every join; runs once now on the current channel
  * Numbers are hexadecimal.
  */
 #include "rt_usb.h"
@@ -181,6 +182,13 @@ void rtl8188eu_dbg_write(ULONG phys, USHORT n)
       a = hexval(&p);
       rtl8821_txpower_set(&g_usbdev, (UCHAR)(a ? 1 : 0));   /* 1 = 5 GHz power from the eFuse, 0 = BB table values */
       tcom_always('P'); d8(g_r21_txp_ofdm); d8(g_r21_txp_ht);
+   } else if (p[0] == 'i' && p[1] == 'q' && p[2] == 'k') {
+      p += 3;
+      a = hexval(&p);
+      rtl8188eu_nic_lock();
+      rtl8821_iqk_set(&g_usbdev, (UCHAR)(a > 2 ? 2 : a));   /* 0 off, 1 = 5 GHz joins, 2 = every join; runs now on the current channel */
+      rtl8188eu_nic_unlock();
+      tcom_always('Q'); d8(g_r21_iqk_done); d8(g_r21_iqk_c2h);
    } else if (p[0] == 'r' && p[1] == 'a' && p[2] == 't' && p[3] == 'e') {
       p += 4;
       a = hexval(&p);

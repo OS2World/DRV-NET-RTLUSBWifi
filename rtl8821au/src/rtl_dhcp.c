@@ -348,6 +348,11 @@ USHORT rtl8188eu_dhcp_read(ULONG phys, USHORT max)
       put_s("\r\nTXP5="); put_dec(g_r21_txp5);              /* 5 GHz power from the eFuse: switch, channel group, */
       put_s(" GRP="); put_dec(g_r21_txp_grp);                     /* indexes written (0 = BB table values)              */
       put_s(" OFDM="); put_h8(g_r21_txp_ofdm); put_s(" HT="); put_h8(g_r21_txp_ht);
+      put_s("\r\nIQK="); put_dec(g_r21_iqk);                 /* firmware IQ calibration: mode, finish report byte,  */
+      put_s(" C2H="); put_h8(g_r21_iqk_c2h);                     /* busy mailbox, correction registers 0xC10 / 0xCCC /  */
+      put_s(" H2CBUSY="); put_dec(g_r21_h2c_busy);               /* 0xCD4 before / after the last run                   */
+      put_s(" IQC=");
+      for (q = 0; q < 6; q++) { put_h32(g_r21_iqc[q]); put_s(q == 2 ? "/" : (q == 5 ? "" : " ")); }
       put_s("\r\n");
    }
    {  /* scan table */

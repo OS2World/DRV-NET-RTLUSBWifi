@@ -743,11 +743,17 @@ static void rx_stats(UCHAR *p, UCHAR *f)
    g_dev_rng = (USHORT)(g_dev_max - g_dev_min);
 }
 
-/* C2H packet: payload[0] = id, [1] = sequence, then the report. id 0x03 = TX report (CCX). */
+/* C2H packet: payload[0] = id, [1] = sequence, then the report. id 0x03 = TX report (CCX), 0x11 = the firmware finished
+ * an IQ calibration (rtl8821_iqk). */
 static void rx_c2h(UCHAR *c, USHORT n)
 {
    USHORT retry, q;
 
+   if (n >= 2 && c[0] == 0x11) {
+      g_r21_iqk_c2h = (UCHAR)(n >= 3 ? c[2] : 0xFF);
+      g_r21_iqk_done = 1;
+      return;
+   }
    if (n < 8 || c[0] != 0x03)
       return;
    retry = (USHORT)(c[2 + 2] & 0x3F);                /* data retry count */
@@ -1300,6 +1306,7 @@ int rtl8188eu_join(usb_dev_t *dev, UCHAR *want_bssid)
    rtl8188eu_tx_prepare(dev);
    rtl8821_set_channel(dev, g_net[best].ch);
    g_curch = g_net[best].ch;
+   rtl8821_iqk(dev, g_net[best].ch);                  /* firmware IQ calibration on the access point's channel */
 #if RUN_TXPOWER
    rtl8188eu_set_txpower(dev, g_net[best].ch);        /* per-rate power for this channel */
 #endif

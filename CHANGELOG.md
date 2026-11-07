@@ -18,6 +18,14 @@
   dongle whose eFuse has no 5 GHz power data. `R21_TXP5` in `rt_usb.h` (and the debug command `txp 0` / `txp 1` in
   admin builds) switches it off. New read-out line: `TXP5= GRP= OFDM= HT=` (0 = table values). The debug command `txp`
   used to call the 8188EU power routine, which writes 8188EU register addresses.
+* IQ calibration on 5 GHz joins, run by the firmware. The driver never calibrated the radio's IQ balance. As the Linux
+  driver does for an 8821A without Bluetooth coexistence, the driver now sends the firmware command 0x45 (channel,
+  band, 20 MHz, external 5 GHz PA / LNA flags from the eFuse) after tuning to the access point's channel and waits up
+  to 500 ms for the firmware's "finished" report (C2H 0x11); the firmware writes the correction registers itself. This
+  adds the driver's first firmware-command (H2C mailbox) code. `R21_IQK` in `rt_usb.h` (debug `iqk 0|1|2` in admin
+  builds): 0 off, 1 on 5 GHz joins (default), 2 on every join. The read-out counters `IQOK` (finished), `IQTX` (sent),
+  `IQTY` (no report in 500 ms), `IQRX` (last duration, ms), `IQRY` (last channel) now mean this, and a new line
+  `IQK= C2H= H2CBUSY= IQC=` shows the correction registers 0xC10 / 0xCCC / 0xCD4 before and after the last run.
 
 ## 0.1.4a2 (2026-11-06)
 
