@@ -245,6 +245,22 @@ static void put_ip(UCHAR *a)
    put_dec(a[0]); put_s("."); put_dec(a[1]); put_s("."); put_dec(a[2]); put_s("."); put_dec(a[3]);
 }
 
+static void put_h8(UCHAR b)
+{
+   static char hxd[17] = "0123456789ABCDEF";
+
+   g_hx[0] = hxd[(b >> 4) & 15]; g_hx[1] = hxd[b & 15]; g_hx[2] = 0;
+   put_s(g_hx);
+}
+
+static void put_h32(ULONG v)                 /* high byte first */
+{
+   static union { ULONG l; UCHAR b[4]; } u;
+
+   u.l = v;
+   put_h8(u.b[3]); put_h8(u.b[2]); put_h8(u.b[1]); put_h8(u.b[0]);
+}
+
 /* Run DHCP and write the result text into the caller's read buffer (physical address).
  * Returns the number of bytes written. */
 USHORT rtl8188eu_dhcp_read(ULONG phys, USHORT max)
@@ -311,6 +327,24 @@ USHORT rtl8188eu_dhcp_read(ULONG phys, USHORT max)
       put_s(" RFE="); put_dec(g_r21_rfe); put_s(" THERM="); put_dec(g_r21_thermal);
       put_s(" MAC=");
       for (q = 0; q < 6; q++) { g_hx[0] = hx3[g_mymac[q] >> 4]; g_hx[1] = hx3[g_mymac[q] & 15]; g_hx[2] = 0; put_s(g_hx); }
+      put_s("\r\n");
+   }
+   {  /* transmit power: the eFuse power area (logical 0x10-0x21 for 2.4 GHz, 0x22-0x39 for 5 GHz, path A) and the TX AGC
+       * registers as the chip has them now (one power index per rate byte: CCK, OFDM 6-18, OFDM 24-54, MCS0-3, VHT 1SS
+       * MCS0-3, VHT 1SS MCS8-9 + 2SS MCS0-1) */
+      static USHORT tpr[6] = { 0x0C20, 0x0C24, 0x0C28, 0x0C2C, 0x0C3C, 0x0C44 };
+      static char  *tpn[6] = { "C20=", " C24=", " C28=", " C2C=", " C3C=", " C44=" };
+      USHORT q;
+
+      put_s("EFPWR2G=");
+      for (q = 0x10; q < 0x22; q++) put_h8(g_r21_ef[q]);
+      put_s(" 5G=");
+      for (q = 0x22; q < 0x3A; q++) put_h8(g_r21_ef[q]);
+      put_s("\r\nTXAGC ");
+      for (q = 0; q < 6; q++) {
+         put_s(tpn[q]);
+         if (g_hw_ready) put_h32(rtw_read32(&g_usbdev, tpr[q])); else put_s("-");
+      }
       put_s("\r\n");
    }
    {  /* scan table */

@@ -7,6 +7,10 @@
   of 0.1.4 the diagnostics filled the 3900-byte text buffer, the lease lines were cut off, and `rtl88eu_ip.cmd`
   logged `no lease:` at every renewal (once even a truncated netmask `255.255`; seen in a forum report, where the
   read-out was exactly 3898 bytes long).
+* The `\DEV\WRND32$` read-out has two new lines for the 5 GHz work: `EFPWR2G=` / `5G=`, the transmit power area of
+  the eFuse (logical bytes 0x10-0x21 and 0x22-0x39: per channel group base indexes and the OFDM / BW20 differences),
+  and `TXAGC`, the power index registers as the chip has them now (0xC20 CCK, 0xC24 / 0xC28 OFDM, 0xC2C HT, 0xC3C /
+  0xC44 VHT; one index per rate byte, 0.5 dB steps).
 
 ## 0.1.4a2 (2026-11-06)
 
