@@ -679,6 +679,7 @@ void rtl8188eu_genmac_ioctl(RP_GENIOCTL FAR *rp)
       rtl8188eu_tx_watchdog(&g_usbdev);
       rtl8188eu_led_tick(&g_usbdev);
       rtl8188eu_dig_tick(&g_usbdev);
+      rtl8188eu_ba_tick(&g_usbdev);
    }
    if (!fast && g_pj && g_hw_ready && !g_scanning && (long)(rtl8188eu_ms() - g_pj_due) >= 0L) {
       g_pj = 0;                                 /* the deferred (re)join, now that the drop has been visible */

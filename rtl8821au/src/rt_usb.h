@@ -351,7 +351,7 @@ void   rtl8188eu_scan_once(usb_dev_t *dev);      /* one pass over channels 1..13
 extern UCHAR  g_joined, g_jch, g_jslen;
 extern UCHAR  g_jbssid[6], g_jssid[33];
 extern USHORT g_jrescap, g_jstatus, g_jaidv;
-extern UCHAR  g_jreq[96], g_jres[128];
+extern UCHAR  g_jreq[160], g_jres[192];
 extern USHORT g_jreqlen, g_jreslen;
 void   rtl8188eu_set_want_ssid(UCHAR FAR *s, UCHAR len);   /* SSID to join, as requested by the supplicant/monitor */
 int    rtl8188eu_join(usb_dev_t *dev, UCHAR *want_bssid);   /* NULL = best BSS of the scan table */
@@ -458,6 +458,11 @@ extern UCHAR  g_r21_iqk, g_r21_iqk_c2h, g_r21_pa5g, g_r21_lna5g;
 extern volatile UCHAR g_r21_iqk_done;
 extern ULONG  g_r21_iqc[6];
 extern USHORT g_r21_h2c_busy;
+#define R21_HT    1     /* 1 = join as an HT (20 MHz, 1 stream) and WMM client; ADDBA requests are declined (rtl_rx.c) */
+void   rtl8188eu_ba_tick(usb_dev_t *dev);         /* rtl_rx.c: answer a pending ADDBA request (task time, request lock) */
+UCHAR  rtl8188eu_ht_state(void);                  /* rtl_rx.c: what the association response granted (read-out) */
+extern UCHAR  g_r21_ht, g_ba_tid;
+extern USHORT g_ba_req, g_ba_tx, g_ba_fail, g_amsdu_n, g_amsdu_sub, g_amsdu_bad;
 
 /* Version and build tag. DRV_BUILD names the change set a test build was made from (set it per branch / pull request), so
  * a boot message, BLDLEVEL (rtl88eu.lnk, kept in step by hand) or a read-out file shows which driver produced it. The

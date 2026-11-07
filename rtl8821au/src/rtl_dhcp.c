@@ -355,6 +355,12 @@ USHORT rtl8188eu_dhcp_read(ULONG phys, USHORT max)
       put_s(" IQC=");
       for (q = 0; q < 6; q++) { put_h32(g_r21_iqc[q]); put_s(q == 2 ? "/" : (q == 5 ? "" : " ")); }
       put_s("\r\n");
+      put_s("HT="); put_dec(g_r21_ht);                           /* HT / WMM join: switch, what the access point granted  */
+      put_s(" GRANT="); put_dec(rtl8188eu_ht_state());           /* (1 HT cap, 2 HT operation, 4 WMM), ADDBA requests /    */
+      put_s(" BA="); put_dec(g_ba_req); put_s("/"); put_dec(g_ba_tx); put_s("/"); put_dec(g_ba_fail);   /* declines sent / failed */
+      put_s(" TID="); put_dec(g_ba_tid);
+      put_s(" AMSDU="); put_dec(g_amsdu_n); put_s("/"); put_dec(g_amsdu_sub); put_s("/"); put_dec(g_amsdu_bad);   /* frames / subframes / dropped */
+      put_s("\r\n");
    }
    {  /* scan table */
       USHORT n, q;

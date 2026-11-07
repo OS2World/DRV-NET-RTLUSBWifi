@@ -52,6 +52,19 @@ come from Paul Smedley's pull requests (his repository psmedley/DRV-NET-RTLUSBWi
   compile date and time, the read-out has a new line `BUILD=<version>-<tag> <date> <time>` after the DHCP lines, and the
   BLDLEVEL description in `rtl88eu.lnk` carries it too (kept in step by hand). `DRV_VERSION` moved from `rt_strat.c` to
   `rt_usb.h`.
+* The dongle now joins as an HT (802.11n, 20 MHz, one stream) and WMM client, so the access point can send to it at HT
+  rates (MCS 0-7, up to 72 Mbit/s) instead of 54 Mbit/s at most. The association request carries an HT capabilities
+  element (short guard interval at 20 MHz, no 40 MHz, no LDPC / STBC, maximum A-MSDU 3839) and the WMM information
+  element; access points use HT rates only towards QoS clients. Our own transmissions are unchanged (legacy rates,
+  non-QoS data frames).
+  * Block Ack (ADDBA) requests from the access point are declined (status 37) from task time, within about a second:
+    receiving A-MPDUs needs a reorder buffer that is not written yet.
+  * A-MSDU frames are received (802.11n requires it): each subframe goes to the protocol stack. Only in protected
+    frames; a first subframe whose address reads as an LLC/SNAP header is dropped (FragAttacks, CVE-2020-24588).
+  * QoS data frames with the Order bit set skip their 4-byte HT Control field.
+  * `R21_HT 0` in `rt_usb.h` leaves both elements out (the old association request). New read-out line:
+    `HT= GRANT= BA= TID= AMSDU=` (GRANT: 1 = the association response has HT capabilities, 2 = HT operation, 4 = WMM
+    parameters; BA: requests / declines sent / failed; AMSDU: frames / subframes / dropped).
 
 ## 0.1.4a2 (2026-11-06)
 
