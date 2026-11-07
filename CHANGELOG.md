@@ -11,6 +11,13 @@
   the eFuse (logical bytes 0x10-0x21 and 0x22-0x39: per channel group base indexes and the OFDM / BW20 differences),
   and `TXAGC`, the power index registers as the chip has them now (0xC20 CCK, 0xC24 / 0xC28 OFDM, 0xC2C HT, 0xC3C /
   0xC44 VHT; one index per rate byte, 0.5 dB steps).
+* 5 GHz transmit power from the eFuse. The driver never set transmit power: every channel on both bands used the BB
+  table's flat index (OFDM 0x30). On a 5 GHz channel the OFDM and 1SS HT/VHT indexes now come from the eFuse as in
+  Realtek's drivers (base index of the channel group at logical 0x22-0x2F plus the OFDM or BW20 difference at 0x30; the
+  Linux build has the by-rate table off, so one index per section). 2.4 GHz keeps the table values, and so does a
+  dongle whose eFuse has no 5 GHz power data. `R21_TXP5` in `rt_usb.h` (and the debug command `txp 0` / `txp 1` in
+  admin builds) switches it off. New read-out line: `TXP5= GRP= OFDM= HT=` (0 = table values). The debug command `txp`
+  used to call the 8188EU power routine, which writes 8188EU register addresses.
 
 ## 0.1.4a2 (2026-11-06)
 

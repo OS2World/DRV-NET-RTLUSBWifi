@@ -447,6 +447,9 @@ void   rtl8821_rf_write(usb_dev_t *dev, UCHAR reg, ULONG data);
 void   rtl8188eu_rx_engine_start(usb_dev_t *dev);
 extern USHORT g_r21_phy_stage, g_r21_channel;
 extern ULONG  g_r21_chk[8];
+#define R21_TXP5  1     /* 1 = 5 GHz transmit power from the eFuse (rtl8821_phy.c); 0 = BB table values on both bands */
+void   rtl8821_txpower_set(usb_dev_t *dev, UCHAR on);   /* debug "txp N" */
+extern UCHAR  g_r21_txp5, g_r21_txp_ofdm, g_r21_txp_ht, g_r21_txp_grp;
 
 /* The resident-end markers (rt_code_end / rt_data_end) are in rt_end.asm, linked last. */
 

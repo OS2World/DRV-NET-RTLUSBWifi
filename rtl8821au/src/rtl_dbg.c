@@ -24,6 +24,7 @@
  *   ep 1|0          efuse power on / off (0xCF unlock + loader clocks)
  *   e A N           read N physical efuse bytes from address A with the stock byte sequence
  *   init            run the full chip initialisation now
+ *   txp 1|0         5 GHz transmit power from the eFuse / BB table values (applied to the current channel)
  * Numbers are hexadecimal.
  */
 #include "rt_usb.h"
@@ -178,7 +179,8 @@ void rtl8188eu_dbg_write(ULONG phys, USHORT n)
    } else if (p[0] == 't' && p[1] == 'x' && p[2] == 'p') {
       p += 3;
       a = hexval(&p);
-      rtl8188eu_set_txpower(&g_usbdev, (UCHAR)a);   /* apply the eFuse-based per-rate power for channel a */
+      rtl8821_txpower_set(&g_usbdev, (UCHAR)(a ? 1 : 0));   /* 1 = 5 GHz power from the eFuse, 0 = BB table values */
+      tcom_always('P'); d8(g_r21_txp_ofdm); d8(g_r21_txp_ht);
    } else if (p[0] == 'r' && p[1] == 'a' && p[2] == 't' && p[3] == 'e') {
       p += 4;
       a = hexval(&p);

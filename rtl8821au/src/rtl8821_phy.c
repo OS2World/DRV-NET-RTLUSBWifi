@@ -444,6 +444,124 @@ static void r21_bw20(usb_dev_t *dev)
    /* the RF bandwidth bits [11:10] = 3 are part of the RF 0x18 value written by rtl8821_set_channel */
 }
 
+/* ---- transmit power ----------------------------------------------------------------------------------------
+ * The BB table leaves one power index per rate group on both bands (0xC20 CCK 0x2C, 0xC24 / 0xC28 OFDM 0x30, 0xC2C-0xC38
+ * HT 0x2C, 0xC3C-0xC4C VHT 0x2A; one byte per rate, 0.5 dB steps). Realtek's drivers set it per channel from the eFuse
+ * (hal_load_pg_txpwr_info_path_5g and phy_get_pg_txpwr_idx in hal_com_phycfg.c; the Linux build has the by-rate table
+ * off, CONFIG_TXPWR_BY_RATE_EN = n, so every rate of a section gets the same index). 5 GHz, path A, 1T:
+ *   logical 0x22-0x2F  BW40 base index of the 14 channel groups (rtw_get_ch_group)
+ *   logical 0x30       BW20 difference (bits 7:4) and OFDM difference (bits 3:0), signed 4 bit
+ *   OFDM index = base + OFDM difference; HT / VHT 20 MHz index = base + BW20 difference; at most 0x3F.
+ * Only 5 GHz is set from the eFuse (R21_TXP5 in rt_usb.h; debug "txp 0" / "txp 1"): 2.4 GHz keeps the table values,
+ * which work, and leaving 5 GHz switches back to them. A base above 0x3F (an unprogrammed eFuse) keeps the table values
+ * too. Linux reads an unprogrammed difference byte (0xFF) as -1 / -1; here it counts as 0. */
+UCHAR g_r21_txp5 = R21_TXP5;            /* 1 = 5 GHz power from the eFuse */
+UCHAR g_r21_txp_ofdm, g_r21_txp_ht;     /* indexes the registers hold now; 0 = the BB table values */
+UCHAR g_r21_txp_grp = 0xFF;             /* eFuse channel group in use (0xFF = none) */
+
+static UCHAR r21_grp5(UCHAR ch)
+{
+   if (ch < 36)   return 0xFF;
+   if (ch <= 42)  return 0;
+   if (ch <= 48)  return 1;
+   if (ch <= 58)  return 2;
+   if (ch <= 64)  return 3;
+   if (ch < 100)  return 0xFF;
+   if (ch <= 106) return 4;
+   if (ch <= 114) return 5;
+   if (ch <= 122) return 6;
+   if (ch <= 130) return 7;
+   if (ch <= 138) return 8;
+   if (ch <= 144) return 9;
+   if (ch < 149)  return 0xFF;
+   if (ch <= 155) return 10;
+   if (ch <= 161) return 11;
+   if (ch <= 171) return 12;
+   if (ch <= 177) return 13;
+   return 0xFF;
+}
+
+static int r21_sx4(UCHAR n)              /* signed 4-bit field in the low nibble */
+{
+   n &= 0x0F;
+   return (n & 8) ? (int)n - 16 : (int)n;
+}
+
+/* The last value the BB table wrote to a register. */
+static ULONG bb_tbl_val(USHORT reg)
+{
+   USHORT i;
+
+   for (i = g_r21_bb_n; i > 0; i--)
+      if (g_r21_bb_tbl[i - 1].a == reg)
+         return g_r21_bb_tbl[i - 1].v;
+   return 0UL;
+}
+
+/* Write the OFDM index (0xC24 / 0xC28) and the 1SS HT / VHT index (0xC2C, 0xC30, 0xC3C, 0xC40, 0xC44 bytes 0-1);
+ * ofdm = 0 puts the BB table values back. The 2SS bytes and CCK (0xC20) are left as the table has them. */
+static void r21_txp_write(usb_dev_t *dev, UCHAR ofdm, UCHAR ht)
+{
+   static USHORT regs[6] = { 0x0C24, 0x0C28, 0x0C2C, 0x0C30, 0x0C3C, 0x0C40 };
+   static union { ULONG l; UCHAR b[4]; } u;
+   USHORT i, k;
+
+   for (i = 0; i < 6; i++) {
+      if (ofdm == 0)
+         u.l = bb_tbl_val(regs[i]);
+      else
+         for (k = 0; k < 4; k++)
+            u.b[k] = (UCHAR)(i < 2 ? ofdm : ht);
+      rtw_write32(dev, regs[i], u.l);
+   }
+   u.l = bb_tbl_val(0x0C44);                     /* VHT 1SS MCS8, MCS9 | 2SS MCS0, MCS1 */
+   if (ofdm != 0) {
+      u.b[0] = ht;
+      u.b[1] = ht;
+   }
+   rtw_write32(dev, 0x0C44, u.l);
+   g_r21_txp_ofdm = ofdm;
+   g_r21_txp_ht   = ofdm ? ht : 0;
+}
+
+static void r21_txpower(usb_dev_t *dev, UCHAR ch)
+{
+   UCHAR g = 0xFF, base = 0xFF, d;
+   int   o, h;
+
+   if (ch > 14 && g_r21_txp5 && g_r21_ef_ok)
+      g = r21_grp5(ch);
+   if (g != 0xFF)
+      base = g_r21_ef[0x22 + g];
+   if (base > 0x3F) {                            /* 2.4 GHz, switched off, no eFuse, or not programmed */
+      g_r21_txp_grp = 0xFF;
+      if (g_r21_txp_ofdm != 0)
+         r21_txp_write(dev, 0, 0);
+      return;
+   }
+   d = g_r21_ef[0x30];
+   o = base;
+   h = base;
+   if (d != 0xFF) {
+      o += r21_sx4(d);
+      h += r21_sx4((UCHAR)(d >> 4));
+   }
+   if (o < 1) o = 1;                             /* 0 would read as "table values" here; index 1 is -31 dB anyway */
+   if (o > 0x3F) o = 0x3F;
+   if (h < 1) h = 1;
+   if (h > 0x3F) h = 0x3F;
+   g_r21_txp_grp = g;
+   if ((UCHAR)o != g_r21_txp_ofdm || (UCHAR)h != g_r21_txp_ht)
+      r21_txp_write(dev, (UCHAR)o, (UCHAR)h);
+}
+
+/* Debug "txp N": switch the 5 GHz eFuse power on (1) or off (0) and apply it to the current channel. */
+void rtl8821_txpower_set(usb_dev_t *dev, UCHAR on)
+{
+   g_r21_txp5 = on;
+   r21_txpower(dev, (UCHAR)g_r21_channel);
+}
+
 /* phy_SwChnl8812 for a 2.4 GHz channel */
 void rtl8821_set_channel(usb_dev_t *dev, UCHAR ch)
 {
@@ -467,6 +585,7 @@ void rtl8821_set_channel(usb_dev_t *dev, UCHAR ch)
    g_rf18 = (rf_tbl_last(RF_CHNLBW) & ~0x00070FFFUL) | mod | 0x00000C00UL | (ULONG)ch;
    rf_write(dev, RF_CHNLBW, g_rf18);
    g_r21_channel = ch;
+   r21_txpower(dev, ch);
 }
 
 /* debug-channel access to the RF path A registers */
@@ -525,6 +644,8 @@ int rtl8821_phy_init(usb_dev_t *dev)
    USHORT i;
 
    g_r21_phy_stage = 0;
+   g_r21_txp_ofdm = 0;                                                   /* the BB table below sets the power registers again */
+   g_r21_txp_ht = 0;
    rtl8821_efuse_load(dev);                                              /* crystal trim, PA / LNA flags, MAC address */
    for (i = 0; i < g_r21_mac_n; i++)                                     /* PHY_MACConfig8812 */
       rtw_write8(dev, g_r21_mac_tbl[i].a, g_r21_mac_tbl[i].v);

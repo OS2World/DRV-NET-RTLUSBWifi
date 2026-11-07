@@ -345,6 +345,9 @@ USHORT rtl8188eu_dhcp_read(ULONG phys, USHORT max)
          put_s(tpn[q]);
          if (g_hw_ready) put_h32(rtw_read32(&g_usbdev, tpr[q])); else put_s("-");
       }
+      put_s("\r\nTXP5="); put_dec(g_r21_txp5);              /* 5 GHz power from the eFuse: switch, channel group, */
+      put_s(" GRP="); put_dec(g_r21_txp_grp);                     /* indexes written (0 = BB table values)              */
+      put_s(" OFDM="); put_h8(g_r21_txp_ofdm); put_s(" HT="); put_h8(g_r21_txp_ht);
       put_s("\r\n");
    }
    {  /* scan table */
