@@ -506,8 +506,11 @@ static void rx_data_frame(UCHAR *f, USHORT len)
  * at HT rates. Latest request only; g_ba_req / g_ba_tx count requests seen and answers sent. */
 static volatile UCHAR g_ba_pend;
 static UCHAR  g_ba_tok, g_ba_par[2], g_ba_tmo[2];
+static ULONG  g_ba_t0;                           /* ms clock when the pending request arrived */
 UCHAR         g_ba_tid = 0xFF;
 USHORT        g_ba_req, g_ba_tx, g_ba_fail;
+USHORT        g_ba_fast;                         /* of g_ba_tx: sent from the context hook (the rest: the 1 s tick) */
+USHORT        g_ba_ms;                           /* request -> decline queued, the last one, ms */
 
 /* One management frame (beacon 0x80 / probe response 0x50): record the network. */
 static int ssid_match(net_t *nt);
@@ -588,7 +591,10 @@ static void note_frame(UCHAR *f, USHORT len, signed char rssi)
             g_ba_par[0] = f[27]; g_ba_par[1] = f[28];
             g_ba_tmo[0] = f[29]; g_ba_tmo[1] = f[30];
             g_ba_tid = (UCHAR)((f[27] >> 2) & 0x0F);
+            g_ba_t0 = rtl8188eu_ms();
             g_ba_pend = 1;
+            ndis_kick();                         /* answer within milliseconds: the access point may hold this
+                                                  * traffic identifier's frames until it has our answer */
          } else if (sub == 0xC0 || sub == 0xA0) {
             USHORT why = (USHORT)(f[24] | (f[25] << 8));
 
@@ -1268,13 +1274,12 @@ static int tx_deauth(usb_dev_t *dev, UCHAR *bssid)
 }
 
 /* ADDBA response declining the access point's request (category 3 Block Ack, action 1): dialog token, status 37,
- * the request's BA parameter set and timeout echoed back. */
-static int tx_addba_decline(usb_dev_t *dev)
+ * the request's BA parameter set and timeout echoed back. Built into f (33 bytes). */
+static void addba_decline_build(UCHAR *f)
 {
-   static UCHAR f[36];
    USHORT i;
 
-   for (i = 0; i < 36; i++) f[i] = 0;
+   for (i = 0; i < 33; i++) f[i] = 0;
    mgmt_hdr(f, 0xD0, g_jbssid);
    f[24] = 3;                                     /* category: Block Ack   */
    f[25] = 1;                                     /* ADDBA response        */
@@ -1282,7 +1287,36 @@ static int tx_addba_decline(usb_dev_t *dev)
    f[27] = 37;  f[28] = 0;                        /* status: request declined */
    f[29] = g_ba_par[0]; f[30] = g_ba_par[1];
    f[31] = g_ba_tmo[0]; f[32] = g_ba_tmo[1];
-   return tx_mgmt(dev, f, 33, 0);
+}
+
+/* The normal path: from the NDIS context hook (rt_ndis.c), armed by the receive path when the request arrives. Task
+ * time, where the protocol stack's own transmits already run; never blocks: one asynchronous TX slot on the management
+ * endpoint, freed by its completion. With no free slot the request stays pending for the next hook run or the tick. */
+void rtl8188eu_ba_hook(void)
+{
+   static UCHAR f[36];
+   USHORT slot, i;
+   UCHAR *b;
+
+   if (!g_ba_pend || !g_joined || !g_hw_ready)
+      return;
+   slot = usb_tx_alloc();
+   if (slot == 0xFFFF)
+      return;
+   g_ba_pend = 0;
+   addba_decline_build(f);
+   b = usb_tx_buf(slot);
+   for (i = 0; i < 33; i++)
+      b[TXD_LEN + i] = f[i];
+   txd_fill(b, 33, 0, 0, 0, g_mgmtrate);
+   if (usb_tx_submit(&g_usbdev, TXEP_MGT, slot, (USHORT)(TXD_LEN + 33)) == 0) {
+      g_ba_tx++;
+      g_ba_fast++;
+      g_ba_ms = (USHORT)(rtl8188eu_ms() - g_ba_t0);
+   } else {
+      g_ba_pend = 1;                              /* the slot is released on failure: try again later */
+      g_ba_fail++;
+   }
 }
 
 /* What the access point's association response granted, from its elements (g_jres): bit 0 HT capabilities, bit 1 HT
@@ -1304,17 +1338,22 @@ UCHAR rtl8188eu_ht_state(void)
    return r;
 }
 
-/* Task time, under the request lock, about once a second (rtl_nic.c): answer a pending ADDBA request. */
+/* Fallback (no context hook, or every slot was busy): task time, under the request lock, about once a second
+ * (rtl_nic.c), through the join's synchronous management path. */
 void rtl8188eu_ba_tick(usb_dev_t *dev)
 {
+   static UCHAR f[36];
+
    if (!g_ba_pend)
       return;
    g_ba_pend = 0;
    if (!g_joined)
       return;
-   if (tx_addba_decline(dev) == 0)
+   addba_decline_build(f);
+   if (tx_mgmt(dev, f, 33, 0) == 0) {
       g_ba_tx++;
-   else
+      g_ba_ms = (USHORT)(rtl8188eu_ms() - g_ba_t0);
+   } else
       g_ba_fail++;
 }
 
@@ -1513,6 +1552,9 @@ int rtl8188eu_join(usb_dev_t *dev, UCHAR *want_bssid)
    g_joined  = 1;
    g_open = g_want_open;
    keys_reset(dev, (UCHAR)(g_open ? 0 : 1));      /* empty CAM, security on (no keys yet) - off for an open network */
+   if (g_ba_pend)
+      ndis_kick();                                /* an ADDBA request that came with the association response: answer it
+                                                   * now, not after the 4-way handshake (it may hold the EAPOL frames) */
    tcom_str(" OK aid="); tcom_dec(g_aid); tcom(10);
    return 0;
 }

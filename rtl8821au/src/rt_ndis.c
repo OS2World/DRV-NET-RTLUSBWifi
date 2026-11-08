@@ -545,6 +545,7 @@ static USHORT g_q_len[RXP_N];
 void __cdecl ndis_hook_c(void)
 {
    g_hk_run++;
+   rtl8188eu_ba_hook();                            /* a pending ADDBA decline goes out first (task time, does not block) */
    while (g_q_tail != g_q_head) {
       USHORT i = (USHORT)(g_q_tail % RXP_N), h, len;
 
@@ -561,6 +562,16 @@ static void arm_hook(void)
 {
    if (rt_dh_arm_ctxhook(0UL, g_hook) != 0)
       g_hk_arm_fail++;                              /* already armed: it will run and find the frame */
+}
+
+/* Run the context hook soon for work that is not a received frame (the ADDBA decline, rtl_rx.c). 0 = no hook: the
+ * caller falls back to its own task-time path. */
+int ndis_kick(void)
+{
+   if (!g_hook_ok || !g_use_hook)
+      return 0;
+   arm_hook();
+   return 1;
 }
 
 void ndis_rx_put(USHORT h, USHORT len)

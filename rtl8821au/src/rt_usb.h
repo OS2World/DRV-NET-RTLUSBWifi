@@ -460,9 +460,11 @@ extern ULONG  g_r21_iqc[6];
 extern USHORT g_r21_h2c_busy;
 #define R21_HT    1     /* 1 = join as an HT (20 MHz, 1 stream) and WMM client; ADDBA requests are declined (rtl_rx.c) */
 void   rtl8188eu_ba_tick(usb_dev_t *dev);         /* rtl_rx.c: answer a pending ADDBA request (task time, request lock) */
+void   rtl8188eu_ba_hook(void);                   /* rtl_rx.c: the same from the context hook, without blocking */
+int    ndis_kick(void);                           /* rt_ndis.c: arm the context hook (0 = no hook)                */
 UCHAR  rtl8188eu_ht_state(void);                  /* rtl_rx.c: what the association response granted (read-out) */
 extern UCHAR  g_r21_ht, g_ba_tid;
-extern USHORT g_ba_req, g_ba_tx, g_ba_fail, g_amsdu_n, g_amsdu_sub, g_amsdu_bad;
+extern USHORT g_ba_req, g_ba_tx, g_ba_fail, g_ba_fast, g_ba_ms, g_amsdu_n, g_amsdu_sub, g_amsdu_bad;
 
 /* Version and build tag. DRV_BUILD names the change set a test build was made from (set it per branch / pull request), so
  * a boot message, BLDLEVEL (rtl88eu.lnk, kept in step by hand) or a read-out file shows which driver produced it. The
