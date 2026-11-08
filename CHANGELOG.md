@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### RTL8821AU
+* Fewer USB receive transfers while joined. Once joined, control frames are no longer passed to the host
+  (REG_RXFLTMAP1 0xFFFF -> 0x0400, PS-Poll only, as Realtek's driver sets it): before, the access point's ACK of every
+  frame we sent came up as one more USB transfer. The join itself still sees every control frame (its ACK diagnostics),
+  and so do scans. TX reports are requested for every 16th data frame instead of every 4th (they only feed the XR*
+  counters). The read-out counters `ACK` / `CTL` stop counting after the join. Switches: `R21_CTLMAP_LINKED`,
+  `R21_RPT_MASK` in `rt_usb.h`. Tested on two machines (both bands): about a third fewer USB receive transfers per
+  downloaded frame; download speed unchanged (about 2.5 MB/s), so the transfer count was not what limits it.
+
 ## 0.1.4a4 (2026-11-09)
 
 Alpha: 0.1.4a3 plus a change to the boot messages only. No change to the driver's behaviour.

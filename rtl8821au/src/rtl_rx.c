@@ -1062,7 +1062,7 @@ UCHAR g_ctlrate;                               /* rate code for handshake / ARP 
 static void txd_fill(UCHAR *b, USHORT n, int bcast, int data, int sec, UCHAR rate)
 {
    static UCHAR rptc;
-   int    rpt = (int)(data && ((rptc++ & 3) == 0));
+   int    rpt = (int)(data && ((rptc++ & R21_RPT_MASK) == 0));   /* TX report (C2H) for every (mask + 1)th data frame */
 
    if (g_curch > 14 && rate < 4)
       rate = 4;                                     /* no CCK on 5 GHz: 6 Mbit/s OFDM */
@@ -1323,6 +1323,7 @@ int rtl8188eu_join(usb_dev_t *dev, UCHAR *want_bssid)
    usb_mdelay(40);
    g_rx_deauth = 0; g_auth_st = 0xFFFF; g_assoc_st = 0xFFFF; g_aid = 0;
    rtw_write32(dev, REG_RCR, RX_RCR | 0x1000UL);   /* ACF: let the AP's ACKs of our frames through (diagnostics) */
+   rtw_write16(dev, 0x06A2, 0xFFFF);              /* control subtypes too (REG_RXFLTMAP1): the join counts the ACKs */
 
    for (att = 1; att <= 3 && g_assoc_st != 0; att++) {
       g_acc_reset = 1;
@@ -1363,6 +1364,7 @@ int rtl8188eu_join(usb_dev_t *dev, UCHAR *want_bssid)
    for (i = 0; i < 6; i++)
       rtw_write8(dev, (USHORT)(0x0618 + i), g_target[i]);         /* BSSID register: the MAC drops other networks' frames */
    rtw_write32(dev, REG_RCR, RX_RCR_LINKED);
+   rtw_write16(dev, 0x06A2, R21_CTLMAP_LINKED);   /* joined: no control frames to the host (see rt_usb.h) */
    g_dg_reason = 0;
    g_fail5 = 0;
    for (i = 0; i < 6; i++) g_jbssid[i] = g_target[i];
@@ -1604,6 +1606,7 @@ void rtl8188eu_leave(usb_dev_t *dev)
    g_joined = 0;
    g_open = 0;
    rtw_write32(dev, REG_RCR, RX_RCR);                     /* scan filter again: every network */
+   rtw_write16(dev, 0x06A2, 0xFFFF);                      /* and every control subtype, as before the join */
    g_eqh = g_eqt = g_eqn = 0;
    g_dqh = g_dqt = g_dqn = 0;
    keys_reset(dev, 0);

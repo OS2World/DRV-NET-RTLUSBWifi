@@ -458,6 +458,17 @@ extern UCHAR  g_r21_iqk, g_r21_iqk_c2h, g_r21_pa5g, g_r21_lna5g;
 extern volatile UCHAR g_r21_iqk_done;
 extern ULONG  g_r21_iqc[6];
 extern USHORT g_r21_h2c_busy;
+/* USB receive budget. The receive path keeps one bulk-IN request outstanding (rt_usb.c, RXN), so every frame the chip
+ * hands up costs a whole USB transfer round trip. Frames the driver does not need should stay in the chip. (Measured:
+ * about a third fewer transfers per downloaded frame, but no change in download speed, about 2.5 MB/s, so the transfer
+ * count is not what limits it.)
+ *   R21_CTLMAP_LINKED  control-frame subtypes passed up once joined (REG_RXFLTMAP1, bit n = subtype n). 0x0400 =
+ *                      PS-Poll only, as Realtek's driver sets it; 0xFFFF (the old value) also passes the access point's
+ *                      ACK of every frame we send, one extra USB transfer per transmitted frame.
+ *   R21_RPT_MASK       a TX report for every (mask + 1)th data frame: 3 = every 4th (old), 15 = every 16th. The reports
+ *                      only feed the XR* read-out counters. */
+#define R21_CTLMAP_LINKED  0x0400
+#define R21_RPT_MASK       15
 
 /* Version and build tag. DRV_BUILD names the change set a test build was made from (set it per branch / pull request), so
  * a boot message, BLDLEVEL (rtl88eu.lnk, kept in step by hand) or a read-out file shows which driver produced it. The
