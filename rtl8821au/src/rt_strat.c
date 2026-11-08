@@ -36,7 +36,6 @@ static USHORT g_rd_pending;            /* an open handle has not read yet: that 
  *   /W  wait:    pause 30 s after all drivers are loaded so the messages can be read
  *   /AA beeps:   accepted (the driver never beeps)
  * Text goes through Save_Message (message 1178 = "%1"); the strings must be static. */
-#define DRV_VERSION   "0.1.4a2"
 #define MSG_REPLACEMENT_STRING  1178
 static struct {
    USHORT id;
@@ -138,7 +137,7 @@ static void rt_init(RP_INIT FAR *rp)
          say("RTL8821AU: warning - unknown option ignored (valid: /V /Q /W /AA).");
       if (g_opt_v) {
          say("RTL8821AU: Realtek RTL8811AU/8821AU (2357:011E) USB WLAN driver for OS/2.");
-         say("RTL8821AU: Version " DRV_VERSION "  Date " __DATE__ ".");
+         say("RTL8821AU: Version " DRV_VERSION "  Build " DRV_BUILD "  Date " __DATE__ " " __TIME__ ".");
          say("RTL8821AU: Supported device: TP-Link Archer T2U Nano 2357:011E, found when it is plugged in.");
          if (nrc == 0)
             say("RTL8821AU: NDIS MAC registered with the Protocol Manager (adapter lan, GenMAC device WRND32$).");

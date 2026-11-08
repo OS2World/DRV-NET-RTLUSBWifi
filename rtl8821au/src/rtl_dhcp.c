@@ -298,6 +298,7 @@ USHORT rtl8188eu_dhcp_read(ULONG phys, USHORT max)
       UCHAR *rb = (UCHAR *)&rv;
       USHORT i, k;
 
+      put_s("BUILD=" DRV_VERSION "-" DRV_BUILD " " __DATE__ " " __TIME__ "\r\n");   /* which driver wrote this file */
       put_s("R21STAGE="); put_dec(g_r21_stage);
       put_s("\r\nR21FWLOAD="); put_dec(g_r21_fwload); put_s(" LEN="); put_dec(g_r21_fwlen); put_s(" SIG=");
       rv = g_r21_fwsig; for (i = 2; i > 0; i--) { g_hx[0] = hxd[rb[i - 1] >> 4]; g_hx[1] = 0; put_s(g_hx); g_hx[0] = hxd[rb[i - 1] & 15]; put_s(g_hx); }

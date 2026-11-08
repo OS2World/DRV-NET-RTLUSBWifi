@@ -26,6 +26,10 @@
   builds): 0 off, 1 on 5 GHz joins (default), 2 on every join. The read-out counters `IQOK` (finished), `IQTX` (sent),
   `IQTY` (no report in 500 ms), `IQRX` (last duration, ms), `IQRY` (last channel) now mean this, and a new line
   `IQK= C2H= H2CBUSY= IQC=` shows the correction registers 0xC10 / 0xCCC / 0xCD4 before and after the last run.
+* Build tag. `DRV_BUILD` in `rt_usb.h` names the change set a test build comes from; the boot message shows it with the
+  compile date and time, the read-out has a new line `BUILD=<version>-<tag> <date> <time>` after the DHCP lines, and the
+  BLDLEVEL description in `rtl88eu.lnk` carries it too (kept in step by hand). `DRV_VERSION` moved from `rt_strat.c` to
+  `rt_usb.h`.
 
 ## 0.1.4a2 (2026-11-06)
 
