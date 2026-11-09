@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.1.4a3 (2026-11-08)
+
+Alpha: 0.1.4a2 plus the changes below. The DHCP read-out fix, the 5 GHz transmit power and the IQ calibration, and the build tag
+come from Paul Smedley's pull requests (his repository psmedley/DRV-NET-RTLUSBWifi, merged 2026-11-08). The RTL8188EU driver is
+unchanged apart from the version number.
 
 ### RTL8821AU
 * Unencrypted (open) networks. The driver only knew WPA2-PSK, so a profile without encryption (the Wireless LAN Monitor

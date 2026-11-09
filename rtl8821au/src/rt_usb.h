@@ -462,8 +462,8 @@ extern USHORT g_r21_h2c_busy;
 /* Version and build tag. DRV_BUILD names the change set a test build was made from (set it per branch / pull request), so
  * a boot message, BLDLEVEL (rtl88eu.lnk, kept in step by hand) or a read-out file shows which driver produced it. The
  * read-out's BUILD= line adds the compile date and time. */
-#define DRV_VERSION   "0.1.4a2"
-#define DRV_BUILD     "dev"
+#define DRV_VERSION   "0.1.4a3"
+#define DRV_BUILD     "release"
 
 /* The resident-end markers (rt_code_end / rt_data_end) are in rt_end.asm, linked last. */
 

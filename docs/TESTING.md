@@ -50,6 +50,17 @@ and a lost-gain problem near the access point.
 runs on ArcaMiix. `TXQRE` (a CPU re-entered the transmit lock): 1-3 per run. Both CPUs and more (APIC ids 0-3) were seen
 running the transmit and receive paths.
 
+## 0.1.4a3 alpha (2026-11-08): what has been run
+
+* Open (unencrypted) networks: joined and got a DHCP lease from a hotel's open network (SSID with a captive portal) on 2.4 GHz
+  (channels 1 and 6) and 5 GHz (channels 36 and 48), through the driver's own DHCP helper; pings to the gateway and to the internet
+  answered, and a web request through the dongle returned the hotel's login-page redirect. The login itself (room number) was not
+  completed in the test VM, which is a browser matter. No long run on an open network yet.
+* Paul Smedley's DHCP read-out fix, 5 GHz transmit power from the eFuse and firmware IQ calibration: merged from his pull requests;
+  they were tested by him, and the join / DHCP / ping path was run again here after the merge (VM, USB passthrough, one 5 GHz
+  access point and one 2.4 GHz). No soak was run on this build.
+* Both drivers build with `build.cmd`; the RTL8188EU source is unchanged from 0.1.4a2.
+
 ## 0.1.4a2 alpha (2026-11-06): what has been run
 
 * Both drivers build with `build.cmd` and with the new `wmake` makefiles (byte-identical apart from the compile date).
