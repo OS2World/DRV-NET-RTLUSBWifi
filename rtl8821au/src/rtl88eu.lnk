@@ -2,7 +2,7 @@
 format os2 dll
 name RTL8821AU.OS2
 option quiet,map=RTL8821AU.map,verbose,caseexact,eliminate,nodefaultlibs
-option description '@#RTL8821AU-OS2:0.1.4a4#@##1## 09 Nov 2026 12:00:00     ARCAOS-DEV::en:US:2:::@@Realtek RTL8821AU USB WiFi driver for OS/2 and ArcaOS (GenMAC + NDIS) build release'
+option description '@#RTL8821AU-OS2:0.1.4a4#@##1## 09 Nov 2026 12:00:00     ARCAOS-DEV::en:US:2:::@@Realtek RTL8821AU USB WiFi driver for OS/2 and ArcaOS (GenMAC + NDIS) build ht20'
 segment class 'CODE' iopl
 import DOSOPEN DOSCALLS.70
 import DOSCLOSE DOSCALLS.59
