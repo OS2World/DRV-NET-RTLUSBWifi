@@ -245,6 +245,22 @@ static void put_ip(UCHAR *a)
    put_dec(a[0]); put_s("."); put_dec(a[1]); put_s("."); put_dec(a[2]); put_s("."); put_dec(a[3]);
 }
 
+static void put_h8(UCHAR b)
+{
+   static char hxd[17] = "0123456789ABCDEF";
+
+   g_hx[0] = hxd[(b >> 4) & 15]; g_hx[1] = hxd[b & 15]; g_hx[2] = 0;
+   put_s(g_hx);
+}
+
+static void put_h32(ULONG v)                 /* high byte first */
+{
+   static union { ULONG l; UCHAR b[4]; } u;
+
+   u.l = v;
+   put_h8(u.b[3]); put_h8(u.b[2]); put_h8(u.b[1]); put_h8(u.b[0]);
+}
+
 /* Run DHCP and write the result text into the caller's read buffer (physical address).
  * Returns the number of bytes written. */
 USHORT rtl8188eu_dhcp_read(ULONG phys, USHORT max)
@@ -257,12 +273,32 @@ USHORT rtl8188eu_dhcp_read(ULONG phys, USHORT max)
       g_r21_tried = 1;
       rtl8188eu_probe(&g_usbdev);
    }
+   /* The lease comes first: the diagnostics below can fill g_text, and the address helper needs these lines.
+    * (With the larger 0.1.4 scan table they no longer fitted after the dump and every renewal read as "no lease".) */
+   rc = dh_run();
+   if (rc != 0) {
+      put_s("STATUS=ERR\r\nCODE="); put_dec((USHORT)rc);
+      put_s(rc == 1 ? "\r\nWHY=NOLINK\r\n" : (rc == 2 ? "\r\nWHY=NOTREADY\r\n" : "\r\nWHY=NOANSWER\r\n"));
+   } else {
+      put_s("STATUS=OK\r\nIP=");     put_ip(g_ip);
+      put_s("\r\nSERVER=");          put_ip(g_srv);
+      if (g_have_mask)   { put_s("\r\nMASK=");   put_ip(g_mask); }
+      if (g_have_router) { put_s("\r\nROUTER="); put_ip(g_router); }
+      if (g_have_dns)    { put_s("\r\nDNS=");    put_ip(g_dns); }
+      /* lease time in units of 64 s: (b1 << 10) | (b2 << 2) | (b3 >> 6), capped */
+      if (g_lease[0] != 0 || g_lease[1] >= 0x40)
+         lease64 = 0xFFFF;
+      else
+         lease64 = (USHORT)((g_lease[1] << 10) | (g_lease[2] << 2) | (g_lease[3] >> 6));
+      put_s("\r\nLEASE64="); put_dec(lease64); put_s("\r\n");
+   }
    {  /* RTL8821AU bring-up results */
       static UCHAR hxd[17] = "0123456789ABCDEF";
       static ULONG rv;
       UCHAR *rb = (UCHAR *)&rv;
       USHORT i, k;
 
+      put_s("BUILD=" DRV_VERSION "-" DRV_BUILD " " __DATE__ " " __TIME__ "\r\n");   /* which driver wrote this file */
       put_s("R21STAGE="); put_dec(g_r21_stage);
       put_s("\r\nR21FWLOAD="); put_dec(g_r21_fwload); put_s(" LEN="); put_dec(g_r21_fwlen); put_s(" SIG=");
       rv = g_r21_fwsig; for (i = 2; i > 0; i--) { g_hx[0] = hxd[rb[i - 1] >> 4]; g_hx[1] = 0; put_s(g_hx); g_hx[0] = hxd[rb[i - 1] & 15]; put_s(g_hx); }
@@ -292,6 +328,32 @@ USHORT rtl8188eu_dhcp_read(ULONG phys, USHORT max)
       put_s(" RFE="); put_dec(g_r21_rfe); put_s(" THERM="); put_dec(g_r21_thermal);
       put_s(" MAC=");
       for (q = 0; q < 6; q++) { g_hx[0] = hx3[g_mymac[q] >> 4]; g_hx[1] = hx3[g_mymac[q] & 15]; g_hx[2] = 0; put_s(g_hx); }
+      put_s("\r\n");
+   }
+   {  /* transmit power: the eFuse power area (logical 0x10-0x21 for 2.4 GHz, 0x22-0x39 for 5 GHz, path A) and the TX AGC
+       * registers as the chip has them now (one power index per rate byte: CCK, OFDM 6-18, OFDM 24-54, MCS0-3, VHT 1SS
+       * MCS0-3, VHT 1SS MCS8-9 + 2SS MCS0-1) */
+      static USHORT tpr[6] = { 0x0C20, 0x0C24, 0x0C28, 0x0C2C, 0x0C3C, 0x0C44 };
+      static char  *tpn[6] = { "C20=", " C24=", " C28=", " C2C=", " C3C=", " C44=" };
+      USHORT q;
+
+      put_s("EFPWR2G=");
+      for (q = 0x10; q < 0x22; q++) put_h8(g_r21_ef[q]);
+      put_s(" 5G=");
+      for (q = 0x22; q < 0x3A; q++) put_h8(g_r21_ef[q]);
+      put_s("\r\nTXAGC ");
+      for (q = 0; q < 6; q++) {
+         put_s(tpn[q]);
+         if (g_hw_ready) put_h32(rtw_read32(&g_usbdev, tpr[q])); else put_s("-");
+      }
+      put_s("\r\nTXP5="); put_dec(g_r21_txp5);              /* 5 GHz power from the eFuse: switch, channel group, */
+      put_s(" GRP="); put_dec(g_r21_txp_grp);                     /* indexes written (0 = BB table values)              */
+      put_s(" OFDM="); put_h8(g_r21_txp_ofdm); put_s(" HT="); put_h8(g_r21_txp_ht);
+      put_s("\r\nIQK="); put_dec(g_r21_iqk);                 /* firmware IQ calibration: mode, finish report byte,  */
+      put_s(" C2H="); put_h8(g_r21_iqk_c2h);                     /* busy mailbox, correction registers 0xC10 / 0xCCC /  */
+      put_s(" H2CBUSY="); put_dec(g_r21_h2c_busy);               /* 0xCD4 before / after the last run                   */
+      put_s(" IQC=");
+      for (q = 0; q < 6; q++) { put_h32(g_r21_iqc[q]); put_s(q == 2 ? "/" : (q == 5 ? "" : " ")); }
       put_s("\r\n");
    }
    {  /* scan table */
@@ -451,23 +513,6 @@ USHORT rtl8188eu_dhcp_read(ULONG phys, USHORT max)
          }
          if ((n & 7) == 7) put_s("\r\n");
       }
-   }
-   rc = dh_run();
-   if (rc != 0) {
-      put_s("STATUS=ERR\r\nCODE="); put_dec((USHORT)rc);
-      put_s(rc == 1 ? "\r\nWHY=NOLINK\r\n" : (rc == 2 ? "\r\nWHY=NOTREADY\r\n" : "\r\nWHY=NOANSWER\r\n"));
-   } else {
-      put_s("STATUS=OK\r\nIP=");     put_ip(g_ip);
-      put_s("\r\nSERVER=");          put_ip(g_srv);
-      if (g_have_mask)   { put_s("\r\nMASK=");   put_ip(g_mask); }
-      if (g_have_router) { put_s("\r\nROUTER="); put_ip(g_router); }
-      if (g_have_dns)    { put_s("\r\nDNS=");    put_ip(g_dns); }
-      /* lease time in units of 64 s: (b1 << 10) | (b2 << 2) | (b3 >> 6), capped */
-      if (g_lease[0] != 0 || g_lease[1] >= 0x40)
-         lease64 = 0xFFFF;
-      else
-         lease64 = (USHORT)((g_lease[1] << 10) | (g_lease[2] << 2) | (g_lease[3] >> 6));
-      put_s("\r\nLEASE64="); put_dec(lease64); put_s("\r\n");
    }
    n = g_tlen;
    if (n > max) n = max;

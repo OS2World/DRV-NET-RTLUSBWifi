@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased
+
+### RTL8821AU
+* The DHCP lines (`STATUS=`, `IP=`, `MASK=`, ...) come first in the `\DEV\WRND32$` read-out. With the larger scan table
+  of 0.1.4 the diagnostics filled the 3900-byte text buffer, the lease lines were cut off, and `rtl88eu_ip.cmd`
+  logged `no lease:` at every renewal (once even a truncated netmask `255.255`; seen in a forum report, where the
+  read-out was exactly 3898 bytes long).
+* The `\DEV\WRND32$` read-out has two new lines for the 5 GHz work: `EFPWR2G=` / `5G=`, the transmit power area of
+  the eFuse (logical bytes 0x10-0x21 and 0x22-0x39: per channel group base indexes and the OFDM / BW20 differences),
+  and `TXAGC`, the power index registers as the chip has them now (0xC20 CCK, 0xC24 / 0xC28 OFDM, 0xC2C HT, 0xC3C /
+  0xC44 VHT; one index per rate byte, 0.5 dB steps).
+* 5 GHz transmit power from the eFuse. The driver never set transmit power: every channel on both bands used the BB
+  table's flat index (OFDM 0x30). On a 5 GHz channel the OFDM and 1SS HT/VHT indexes now come from the eFuse as in
+  Realtek's drivers (base index of the channel group at logical 0x22-0x2F plus the OFDM or BW20 difference at 0x30; the
+  Linux build has the by-rate table off, so one index per section). 2.4 GHz keeps the table values, and so does a
+  dongle whose eFuse has no 5 GHz power data. `R21_TXP5` in `rt_usb.h` (and the debug command `txp 0` / `txp 1` in
+  admin builds) switches it off. New read-out line: `TXP5= GRP= OFDM= HT=` (0 = table values). The debug command `txp`
+  used to call the 8188EU power routine, which writes 8188EU register addresses.
+* IQ calibration on 5 GHz joins, run by the firmware. The driver never calibrated the radio's IQ balance. As the Linux
+  driver does for an 8821A without Bluetooth coexistence, the driver now sends the firmware command 0x45 (channel,
+  band, 20 MHz, external 5 GHz PA / LNA flags from the eFuse) after tuning to the access point's channel and waits up
+  to 500 ms for the firmware's "finished" report (C2H 0x11); the firmware writes the correction registers itself. This
+  adds the driver's first firmware-command (H2C mailbox) code. `R21_IQK` in `rt_usb.h` (debug `iqk 0|1|2` in admin
+  builds): 0 off, 1 on 5 GHz joins (default), 2 on every join. The read-out counters `IQOK` (finished), `IQTX` (sent),
+  `IQTY` (no report in 500 ms), `IQRX` (last duration, ms), `IQRY` (last channel) now mean this, and a new line
+  `IQK= C2H= H2CBUSY= IQC=` shows the correction registers 0xC10 / 0xCCC / 0xCD4 before and after the last run.
+* Build tag. `DRV_BUILD` in `rt_usb.h` names the change set a test build comes from; the boot message shows it with the
+  compile date and time, the read-out has a new line `BUILD=<version>-<tag> <date> <time>` after the DHCP lines, and the
+  BLDLEVEL description in `rtl88eu.lnk` carries it too (kept in step by hand). `DRV_VERSION` moved from `rt_strat.c` to
+  `rt_usb.h`.
+
 ## 0.1.4a2 (2026-11-06)
 
 Alpha: 0.1.4a1 plus the changes below. Makefiles contributed by Andy Willis (pull request #2).

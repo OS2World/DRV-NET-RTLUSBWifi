@@ -444,6 +444,124 @@ static void r21_bw20(usb_dev_t *dev)
    /* the RF bandwidth bits [11:10] = 3 are part of the RF 0x18 value written by rtl8821_set_channel */
 }
 
+/* ---- transmit power ----------------------------------------------------------------------------------------
+ * The BB table leaves one power index per rate group on both bands (0xC20 CCK 0x2C, 0xC24 / 0xC28 OFDM 0x30, 0xC2C-0xC38
+ * HT 0x2C, 0xC3C-0xC4C VHT 0x2A; one byte per rate, 0.5 dB steps). Realtek's drivers set it per channel from the eFuse
+ * (hal_load_pg_txpwr_info_path_5g and phy_get_pg_txpwr_idx in hal_com_phycfg.c; the Linux build has the by-rate table
+ * off, CONFIG_TXPWR_BY_RATE_EN = n, so every rate of a section gets the same index). 5 GHz, path A, 1T:
+ *   logical 0x22-0x2F  BW40 base index of the 14 channel groups (rtw_get_ch_group)
+ *   logical 0x30       BW20 difference (bits 7:4) and OFDM difference (bits 3:0), signed 4 bit
+ *   OFDM index = base + OFDM difference; HT / VHT 20 MHz index = base + BW20 difference; at most 0x3F.
+ * Only 5 GHz is set from the eFuse (R21_TXP5 in rt_usb.h; debug "txp 0" / "txp 1"): 2.4 GHz keeps the table values,
+ * which work, and leaving 5 GHz switches back to them. A base above 0x3F (an unprogrammed eFuse) keeps the table values
+ * too. Linux reads an unprogrammed difference byte (0xFF) as -1 / -1; here it counts as 0. */
+UCHAR g_r21_txp5 = R21_TXP5;            /* 1 = 5 GHz power from the eFuse */
+UCHAR g_r21_txp_ofdm, g_r21_txp_ht;     /* indexes the registers hold now; 0 = the BB table values */
+UCHAR g_r21_txp_grp = 0xFF;             /* eFuse channel group in use (0xFF = none) */
+
+static UCHAR r21_grp5(UCHAR ch)
+{
+   if (ch < 36)   return 0xFF;
+   if (ch <= 42)  return 0;
+   if (ch <= 48)  return 1;
+   if (ch <= 58)  return 2;
+   if (ch <= 64)  return 3;
+   if (ch < 100)  return 0xFF;
+   if (ch <= 106) return 4;
+   if (ch <= 114) return 5;
+   if (ch <= 122) return 6;
+   if (ch <= 130) return 7;
+   if (ch <= 138) return 8;
+   if (ch <= 144) return 9;
+   if (ch < 149)  return 0xFF;
+   if (ch <= 155) return 10;
+   if (ch <= 161) return 11;
+   if (ch <= 171) return 12;
+   if (ch <= 177) return 13;
+   return 0xFF;
+}
+
+static int r21_sx4(UCHAR n)              /* signed 4-bit field in the low nibble */
+{
+   n &= 0x0F;
+   return (n & 8) ? (int)n - 16 : (int)n;
+}
+
+/* The last value the BB table wrote to a register. */
+static ULONG bb_tbl_val(USHORT reg)
+{
+   USHORT i;
+
+   for (i = g_r21_bb_n; i > 0; i--)
+      if (g_r21_bb_tbl[i - 1].a == reg)
+         return g_r21_bb_tbl[i - 1].v;
+   return 0UL;
+}
+
+/* Write the OFDM index (0xC24 / 0xC28) and the 1SS HT / VHT index (0xC2C, 0xC30, 0xC3C, 0xC40, 0xC44 bytes 0-1);
+ * ofdm = 0 puts the BB table values back. The 2SS bytes and CCK (0xC20) are left as the table has them. */
+static void r21_txp_write(usb_dev_t *dev, UCHAR ofdm, UCHAR ht)
+{
+   static USHORT regs[6] = { 0x0C24, 0x0C28, 0x0C2C, 0x0C30, 0x0C3C, 0x0C40 };
+   static union { ULONG l; UCHAR b[4]; } u;
+   USHORT i, k;
+
+   for (i = 0; i < 6; i++) {
+      if (ofdm == 0)
+         u.l = bb_tbl_val(regs[i]);
+      else
+         for (k = 0; k < 4; k++)
+            u.b[k] = (UCHAR)(i < 2 ? ofdm : ht);
+      rtw_write32(dev, regs[i], u.l);
+   }
+   u.l = bb_tbl_val(0x0C44);                     /* VHT 1SS MCS8, MCS9 | 2SS MCS0, MCS1 */
+   if (ofdm != 0) {
+      u.b[0] = ht;
+      u.b[1] = ht;
+   }
+   rtw_write32(dev, 0x0C44, u.l);
+   g_r21_txp_ofdm = ofdm;
+   g_r21_txp_ht   = ofdm ? ht : 0;
+}
+
+static void r21_txpower(usb_dev_t *dev, UCHAR ch)
+{
+   UCHAR g = 0xFF, base = 0xFF, d;
+   int   o, h;
+
+   if (ch > 14 && g_r21_txp5 && g_r21_ef_ok)
+      g = r21_grp5(ch);
+   if (g != 0xFF)
+      base = g_r21_ef[0x22 + g];
+   if (base > 0x3F) {                            /* 2.4 GHz, switched off, no eFuse, or not programmed */
+      g_r21_txp_grp = 0xFF;
+      if (g_r21_txp_ofdm != 0)
+         r21_txp_write(dev, 0, 0);
+      return;
+   }
+   d = g_r21_ef[0x30];
+   o = base;
+   h = base;
+   if (d != 0xFF) {
+      o += r21_sx4(d);
+      h += r21_sx4((UCHAR)(d >> 4));
+   }
+   if (o < 1) o = 1;                             /* 0 would read as "table values" here; index 1 is -31 dB anyway */
+   if (o > 0x3F) o = 0x3F;
+   if (h < 1) h = 1;
+   if (h > 0x3F) h = 0x3F;
+   g_r21_txp_grp = g;
+   if ((UCHAR)o != g_r21_txp_ofdm || (UCHAR)h != g_r21_txp_ht)
+      r21_txp_write(dev, (UCHAR)o, (UCHAR)h);
+}
+
+/* Debug "txp N": switch the 5 GHz eFuse power on (1) or off (0) and apply it to the current channel. */
+void rtl8821_txpower_set(usb_dev_t *dev, UCHAR on)
+{
+   g_r21_txp5 = on;
+   r21_txpower(dev, (UCHAR)g_r21_channel);
+}
+
 /* phy_SwChnl8812 for a 2.4 GHz channel */
 void rtl8821_set_channel(usb_dev_t *dev, UCHAR ch)
 {
@@ -467,6 +585,7 @@ void rtl8821_set_channel(usb_dev_t *dev, UCHAR ch)
    g_rf18 = (rf_tbl_last(RF_CHNLBW) & ~0x00070FFFUL) | mod | 0x00000C00UL | (ULONG)ch;
    rf_write(dev, RF_CHNLBW, g_rf18);
    g_r21_channel = ch;
+   r21_txpower(dev, ch);
 }
 
 /* debug-channel access to the RF path A registers */
@@ -520,11 +639,16 @@ void rtl8821_lck(usb_dev_t *dev)
 USHORT g_r21_hold;                                                       /* 1 = the background scan does nothing (experiments) */
 USHORT g_r21_norx = 0;                                                   /* 1 = do not start the async receive engine at init (debug) */
 
+static UCHAR g_h2c_box;                  /* next firmware command box (r21_h2c below); 0 after a firmware load */
+
 int rtl8821_phy_init(usb_dev_t *dev)
 {
    USHORT i;
 
    g_r21_phy_stage = 0;
+   g_r21_txp_ofdm = 0;                                                   /* the BB table below sets the power registers again */
+   g_r21_txp_ht = 0;
+   g_h2c_box = 0;                                                        /* the firmware was just loaded: it starts at box 0 */
    rtl8821_efuse_load(dev);                                              /* crystal trim, PA / LNA flags, MAC address */
    for (i = 0; i < g_r21_mac_n; i++)                                     /* PHY_MACConfig8812 */
       rtw_write8(dev, g_r21_mac_tbl[i].a, g_r21_mac_tbl[i].v);
@@ -573,8 +697,104 @@ int rtl8188eu_card_disable(usb_dev_t *dev)
    return 0;
 }
 
+/* ---- firmware commands (H2C) ------------------------------------------------------------------------------
+ * fill_h2c_cmd_8812 (rtl8812a_cmd.c, CONFIG_H2C_EF): four mailboxes, used in turn. A box is free when its bit in
+ * REG_HMETFR is clear (the firmware clears it when it has read the command). The extension box (0x1F0 + 4 * n, bytes 4-7
+ * of a longer command) is written first, then the box itself (0x1D0 + 4 * n): byte 0 = command id, bytes 1-3 = data.
+ * Byte writes, as the Linux driver does them. Task time only. */
+#define REG_HMETFR       0x01CC
+#define REG_HMEBOX_0     0x01D0
+#define REG_HMEBOX_EXT0  0x01F0
+
+USHORT        g_r21_h2c_busy;                    /* commands dropped because the box stayed busy */
+
+static int r21_h2c(usb_dev_t *dev, UCHAR id, UCHAR b1, UCHAR b2, UCHAR b3)
+{
+   UCHAR  box = g_h2c_box, bit = (UCHAR)(1 << box);
+   USHORT n, mb = (USHORT)(REG_HMEBOX_0 + (box << 2)), xb = (USHORT)(REG_HMEBOX_EXT0 + (box << 2));
+
+   for (n = 0; n < 100 && (rtw_read8(dev, REG_HMETFR) & bit); n++)
+      usb_mdelay(1);
+   if (n >= 100) {
+      g_r21_h2c_busy++;
+      return -1;
+   }
+   for (n = 0; n < 4; n++)
+      rtw_write8(dev, (USHORT)(xb + n), 0);
+   rtw_write8(dev, mb, id);
+   rtw_write8(dev, (USHORT)(mb + 1), b1);
+   rtw_write8(dev, (USHORT)(mb + 2), b2);
+   rtw_write8(dev, (USHORT)(mb + 3), b3);
+   g_h2c_box = (UCHAR)((box + 1) & 3);
+   return 0;
+}
+
+/* ---- IQ calibration, run by the firmware ----------------------------------------------------------------------
+ * For an 8821A without Bluetooth coexistence the Linux driver does not calibrate on the host: rtl8812_init_dm_priv sets
+ * RegIQKFWOffload, and phy_iq_calibrate_8821a then sends H2C 0x45 (_phy_iq_calibrate_by_fw_8821a) and waits up to 500 ms
+ * for the firmware's C2H 0x11 (IQK_FINISH, seen by rx_c2h in rtl_rx.c). The firmware writes the TX / RX IQ correction
+ * itself. Command data: channel; band in bits 5:4 (1 = 2.4 GHz, 2 = 5 GHz) and bandwidth in bits 3:0 (1 = 20 MHz);
+ * external 5 GHz PA (bit 0) and LNA (bit 1). RTL8821AU.FW is the non-Bluetooth image (30880 bytes, Realtek's
+ * array_mp_8821a_fw_nic), the one Linux uses this way.
+ * Run after the join has tuned to the access point's channel (Linux sets bNeedIQK on a join, rtw_mlme_ext.c).
+ * R21_IQK in rt_usb.h, debug "iqk N": 0 = off, 1 = 5 GHz joins only (2.4 GHz works without it), 2 = every join.
+ * The read-out shows the correction registers before and after: 0xC10 (RX), and 0xCCC / 0xCD4 on BB page C1 (TX);
+ * phy_reset_iqk_result_8821a gives their "no correction" values (0xC10[9:0] 0x100, 0xCCC[10:0] 0, 0xCD4[10:0] 0x200). */
+UCHAR          g_r21_iqk = R21_IQK;
+volatile UCHAR g_r21_iqk_done;                   /* set by the C2H IQK_FINISH report */
+UCHAR          g_r21_iqk_c2h = 0xFF;             /* its first data byte */
+USHORT         g_r21_iqk_sent, g_r21_iqk_ok, g_r21_iqk_tmo, g_r21_iqk_ms, g_r21_iqk_ch;
+ULONG          g_r21_iqc[6];                     /* before: 0xC10, 0xCCC, 0xCD4; after: the same (0xFFFFFFFF = not read) */
+
+static void r21_iqc_read(usb_dev_t *dev, ULONG *r)
+{
+   r[0] = rtw_read32(dev, 0x0C10);
+   bb_set(dev, 0x082C, 0x80000000UL, 1UL);       /* BB page C1 */
+   r[1] = rtw_read32(dev, 0x0CCC);
+   r[2] = rtw_read32(dev, 0x0CD4);
+   bb_set(dev, 0x082C, 0x80000000UL, 0UL);       /* back to page C */
+}
+
+void rtl8821_iqk(usb_dev_t *dev, UCHAR ch)
+{
+   ULONG  t0;
+   USHORT n;
+
+   if (g_r21_iqk == 0 || (g_r21_iqk == 1 && ch <= 14))
+      return;
+   r21_iqc_read(dev, &g_r21_iqc[0]);
+   g_r21_iqc[3] = g_r21_iqc[4] = g_r21_iqc[5] = 0xFFFFFFFFUL;
+   g_r21_iqk_done = 0;
+   g_r21_iqk_c2h = 0xFF;
+   g_r21_iqk_ch = ch;
+   if (r21_h2c(dev, 0x45, ch, (UCHAR)((ch > 14 ? 0x20 : 0x10) | 0x01), (UCHAR)(g_r21_pa5g | (g_r21_lna5g << 1))) != 0)
+      return;
+   g_r21_iqk_sent++;
+   t0 = rtl8188eu_ms();
+   for (n = 0; n < 100 && !g_r21_iqk_done; n++)  /* up to 500 ms, as phydm_iqk_wait */
+      usb_mdelay(5);
+   g_r21_iqk_ms = (USHORT)(rtl8188eu_ms() - t0);
+   if (!g_r21_iqk_done) {
+      g_r21_iqk_tmo++;                           /* the firmware may still be calibrating: leave BB page select alone */
+      return;
+   }
+   g_r21_iqk_ok++;
+   r21_iqc_read(dev, &g_r21_iqc[3]);
+}
+
+void rtl8821_iqk_set(usb_dev_t *dev, UCHAR mode)  /* debug "iqk N": set the mode and run it on the current channel */
+{
+   g_r21_iqk = mode;
+   rtl8821_iqk(dev, (UCHAR)g_r21_channel);
+}
+
+/* Read-out lines IQOK / IQTX / IQTY / IQRX / IQRY (rtl_dhcp.c). */
 USHORT rtl8188eu_iqk_info(USHORT i)
 {
-   (void)i;                                      /* IQ calibration is not run yet */
+   if (i == 0) return g_r21_iqk_ok;              /* IQOK: calibrations the firmware reported finished */
+   if (i == 1) return g_r21_iqk_sent;            /* IQTX: commands sent */
+   if (i == 2) return g_r21_iqk_tmo;             /* IQTY: no finish report within 500 ms */
+   if (i == 3) return g_r21_iqk_ms;              /* IQRX: duration of the last one, ms */
+   if (i == 4) return g_r21_iqk_ch;              /* IQRY: its channel */
    return 0;
 }
