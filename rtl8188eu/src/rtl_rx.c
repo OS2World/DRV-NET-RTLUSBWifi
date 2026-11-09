@@ -357,6 +357,8 @@ static USHORT g_sc[17];
 static USHORT g_ndup;
 
 static USHORT g_led_act;                        /* set by data traffic, consumed by rtl8188eu_led_tick */
+UCHAR         g_open;                           /* joined an unencrypted (open) network: no keys, data frames travel in the clear */
+UCHAR         g_want_open;                      /* the next join is for an open network (set from the authentication / encryption modes) */
 static UCHAR  g_ptk_ok, g_gtk_ok;                    /* pairwise / group key installed on the current join */
 
 static void rx_data_frame(UCHAR *f, USHORT len)
@@ -390,6 +392,10 @@ static void rx_data_frame(UCHAR *f, USHORT len)
    g_nd++;
    if (f[1] & 0x40) { g_np++; if (g_rxsw) g_nsw++; }
    hl = (USHORT)((f[0] & 0x80) ? 26 : 24);
+   if ((f[1] & 0x40) && g_open) {                 /* an open network must not send protected frames */
+      g_ndrop++;
+      return;
+   }
    if (f[1] & 0x40) {                             /* protected: CCMP header + MIC */
       if (g_rxsw) { g_ndrop++; return; }          /* chip did not decrypt: no key */
       hl = (USHORT)(hl + 8);
@@ -404,7 +410,7 @@ static void rx_data_frame(UCHAR *f, USHORT len)
    eapol = (UCHAR)(f[hl + 6] == 0x88 && f[hl + 7] == 0x8E);
    /* WPA2 rule: only EAPOL may travel unprotected. Every other data frame needs the pairwise key to be
     * installed AND the Protected bit set; otherwise anyone who spoofs the AP address could inject plaintext. */
-   if (!eapol && (!g_ptk_ok || !(f[1] & 0x40))) {
+   if (!eapol && !g_open && (!g_ptk_ok || !(f[1] & 0x40))) {      /* (an open join accepts plain data: there is no key to wait for) */
       g_ndrop++;
       return;
    }
@@ -999,7 +1005,7 @@ static int tx_assoc(usb_dev_t *dev, UCHAR *bssid, char *ssid, UCHAR slen)
    for (i = 0; i < 112; i++) f[i] = 0;
    mgmt_hdr(f, 0x00, bssid);                      /* association request */
    n = 24;
-   f[n++] = 0x31; f[n++] = 0x16;                  /* capability: ESS, privacy, short preamble/slot */
+   f[n++] = (UCHAR)(g_want_open ? 0x21 : 0x31); f[n++] = 0x16;   /* capability: ESS, [privacy], short preamble/slot */
    f[n++] = 2;    f[n++] = 0;                     /* listen interval */
    f[n++] = 0;    f[n++] = slen;                  /* SSID */
    for (i = 0; i < slen; i++) f[n++] = (UCHAR)ssid[i];
@@ -1007,7 +1013,8 @@ static int tx_assoc(usb_dev_t *dev, UCHAR *bssid, char *ssid, UCHAR slen)
    for (i = 0; i < 8; i++) f[n++] = g_rt8[i];     /* supported rates */
    f[n++] = 50;   f[n++] = 4;
    for (i = 0; i < 4; i++) f[n++] = g_rt4[i];     /* extended rates */
-   for (i = 0; i < 22; i++) f[n++] = g_rsn[i];    /* RSN: CCMP, CCMP, PSK */
+   if (!g_want_open)
+      for (i = 0; i < 22; i++) f[n++] = g_rsn[i]; /* RSN: CCMP, CCMP, PSK (none for an open network) */
    g_jreqlen = (USHORT)(n - 28);                  /* what the supplicant reads back as request IEs */
    for (i = 0; i < g_jreqlen; i++) g_jreq[i] = f[28 + i];
    return tx_mgmt(dev, f, n, 0);
@@ -1056,6 +1063,7 @@ int rtl8188eu_join(usb_dev_t *dev, UCHAR *want_bssid)
    g_eqh = g_eqt = g_eqn = 0;
    for (k = 0; k < 17; k++)                         /* fresh association: forget the duplicate-filter history */
       g_sc[k] = 0xFFFF;
+   g_open = 0;
    g_dg_tries++;
    g_ev_n = 0;
    g_ev_t0 = rtl8188eu_ms();
@@ -1064,6 +1072,8 @@ int rtl8188eu_join(usb_dev_t *dev, UCHAR *want_bssid)
    g_dg_bssf = (USHORT)(want_bssid ? 1 : 0);
    for (k = 0; k < g_nnet; k++) {
       if (!ssid_match(&g_net[k]))
+         continue;
+      if (g_want_open && g_net[k].sec != 0)       /* an open join only takes an access point without encryption */
          continue;
       if (want_bssid) {
          UCHAR same = 1;
@@ -1142,7 +1152,8 @@ int rtl8188eu_join(usb_dev_t *dev, UCHAR *want_bssid)
    g_jaidv   = g_aid;
    g_jstatus = 0;
    g_joined  = 1;
-   keys_reset(dev, 1);                            /* empty CAM, security on (no keys yet) */
+   g_open = g_want_open;
+   keys_reset(dev, (UCHAR)(g_open ? 0 : 1));      /* empty CAM, security on (no keys yet) - off for an open network */
    tcom_str(" OK aid="); tcom_dec(g_aid); tcom(10);
    return 0;
 }
@@ -1250,6 +1261,7 @@ USHORT rtl8188eu_diag(USHORT i)
    if (i == 82) return ndis_diag(0);                                       /* INDTMO */
    if (i == 83) return ndis_diag(1);                                       /* INDRE */
    if (i == 84) return ndis_diag(3);                                       /* CPURX */
+   if (i == 85) return g_open;
    if (i == 40) return g_dg_ack;
    if (i == 41) return g_dg_ctl;
    if (i == 42) return g_dg_tmn;
@@ -1301,6 +1313,7 @@ void rtl8188eu_leave(usb_dev_t *dev)
    usb_mdelay(20);
    tx_deauth(dev, g_jbssid);
    g_joined = 0;
+   g_open = 0;
    g_eqh = g_eqt = g_eqn = 0;
    g_dqh = g_dqt = g_dqn = 0;
    keys_reset(dev, 0);
@@ -1476,6 +1489,7 @@ static void keys_reset(usb_dev_t *dev, UCHAR secure)
 void rtl8188eu_on_detach(void)
 {
    g_joined = 0;
+   g_open = 0;
    g_ptk_ok = g_gtk_ok = 0;
    g_eqh = g_eqt = g_eqn = 0;
    g_dqh = g_dqt = g_dqn = 0;
@@ -1636,7 +1650,7 @@ static UCHAR choose_rate(UCHAR *eth, USHORT len)
 
 int rtl8188eu_tx_ready(void)
 {
-   return g_joined && g_ptk_ok;
+   return g_joined && (g_ptk_ok || g_open);
 }
 
 /* A free TX slot for an outgoing NDIS frame; waits briefly for one (a slot frees within a few ms). 0xFFFF = none. */
@@ -1676,7 +1690,7 @@ int rtl8188eu_ndis_tx_slot(USHORT slot, USHORT len)
 
    b   = usb_tx_buf(slot);
    eth = b + TX_ETH_OFF;
-   if (!g_joined || !g_ptk_ok || len < 14 || len > MAX_FRAME_SIZE) {
+   if (!g_joined || !(g_ptk_ok || g_open) || len < 14 || len > MAX_FRAME_SIZE) {
       usb_tx_release(slot);
       return -1;
    }
@@ -1685,6 +1699,31 @@ int rtl8188eu_ndis_tx_slot(USHORT slot, USHORT len)
    rate = choose_rate(eth, len);                   /* reads the Ethernet header: before it is overwritten */
    for (i = 0; i < 6; i++) da[i] = eth[i];
    et0 = eth[12]; et1 = eth[13];
+   if (g_open) {
+      /* Open network: no CCMP header, so the frame is 8 bytes shorter in front of the payload: move the payload down first
+       * (the Ethernet header bytes it overwrites were saved above), then write the 24 + 8 header bytes. */
+      for (i = 0; i < (USHORT)(len - 14); i++) f[32 + i] = f[40 + i];
+      for (i = 0; i < 32; i++) f[i] = 0;
+      f[0] = 0x08;                                 /* data frame            */
+      f[1] = 0x01;                                 /* ToDS, not protected   */
+      for (i = 0; i < 6; i++) {
+         f[4 + i]  = g_jbssid[i];                  /* A1 = BSSID (AP)       */
+         f[10 + i] = g_mymac[i];                   /* A2 = us               */
+         f[16 + i] = da[i];                        /* A3 = destination      */
+      }
+      for (i = 0; i < 6; i++) f[24 + i] = llc[i];
+      f[30] = et0; f[31] = et1;
+      n = (USHORT)(32 + len - 14);
+      txd_fill(b, n, 0, 1, 0, rate);               /* no hardware encryption */
+      fl = usb_txq_lock();
+      if (fl == 0xFFFF) {
+         usb_tx_release(slot);
+         return -2;
+      }
+      rc = usb_tx_submit_locked(&g_usbdev, 3, slot, (USHORT)(48 + n));
+      usb_txq_unlock(fl);
+      return rc;
+   }
    for (i = 0; i < 40; i++) f[i] = 0;
    f[0] = 0x08;                                    /* data frame            */
    f[1] = 0x41;                                    /* ToDS | Protected      */
@@ -1721,7 +1760,7 @@ int rtl8188eu_ndis_tx(UCHAR *eth, USHORT len)
    USHORT slot, i;
    UCHAR  *d;
 
-   if (!g_joined || !g_ptk_ok || len < 14 || len > MAX_FRAME_SIZE)
+   if (!g_joined || !(g_ptk_ok || g_open) || len < 14 || len > MAX_FRAME_SIZE)
       return -1;
    slot = rtl8188eu_ndis_slot();
    if (slot == 0xFFFF)

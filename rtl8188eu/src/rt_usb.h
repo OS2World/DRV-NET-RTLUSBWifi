@@ -394,7 +394,8 @@ void   usb_tx_reclaim(void);                     /* rt_usb.c: cancel stuck trans
 #define RT_TX_RECLAIM  1   /* cancel stuck transmit requests from task time (0.1.3 tried it from TransmitChain: did not free the slots) */
 #define RT_TX_DROP_STUCK 1 /* while a transmit request is stuck, drop new frames instead of "out of resources": the protocol
                             * would retry in a tight loop for as long as the link is dead, which froze the machine */
-#define DIAG_COUNT 85
+extern UCHAR g_open, g_want_open;   /* rtl_rx.c: unencrypted network joined / being joined */
+#define DIAG_COUNT 86
 void   rtl8188eu_on_detach(void);               /* rtl_rx.c: forget link, keys and queues */
 void   rtl8188eu_nic_lock(void);                 /* rtl_nic.c: the request lock of the OID interface */
 void   rtl8188eu_nic_unlock(void);

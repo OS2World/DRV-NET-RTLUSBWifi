@@ -3,8 +3,12 @@
 ## 0.1.4a3 (2026-11-08)
 
 Alpha: 0.1.4a2 plus the changes below. The DHCP read-out fix, the 5 GHz transmit power and the IQ calibration, and the build tag
-come from Paul Smedley's pull requests (his repository psmedley/DRV-NET-RTLUSBWifi, merged 2026-11-08). The RTL8188EU driver is
-unchanged apart from the version number.
+come from Paul Smedley's pull requests (his repository psmedley/DRV-NET-RTLUSBWifi, merged 2026-11-08).
+
+### RTL8188EU
+* Unencrypted (open) networks, ported from the RTL8821AU driver (same changes in `rtl_rx.c` / `rtl_nic.c`): an open join sends
+  no privacy bit or RSN element, installs no keys, sends data frames unprotected and accepts unprotected data. New read-out
+  counter `OPEN`. **Build-tested only: not yet run on an RTL8188EUS dongle.**
 
 ### RTL8821AU
 * Unencrypted (open) networks. The driver only knew WPA2-PSK, so a profile without encryption (the Wireless LAN Monitor

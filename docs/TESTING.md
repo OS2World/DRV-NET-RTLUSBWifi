@@ -59,7 +59,8 @@ running the transmit and receive paths.
 * Paul Smedley's DHCP read-out fix, 5 GHz transmit power from the eFuse and firmware IQ calibration: merged from his pull requests;
   they were tested by him, and the join / DHCP / ping path was run again here after the merge (VM, USB passthrough, one 5 GHz
   access point and one 2.4 GHz). No soak was run on this build.
-* Both drivers build with `build.cmd`; the RTL8188EU source is unchanged from 0.1.4a2.
+* Both drivers build with `build.cmd`. The RTL8188EU open-network port (same code as the RTL8821AU one) is build-tested only: it has not
+  been run on an RTL8188EUS dongle.
 
 ## 0.1.4a2 alpha (2026-11-06): what has been run
 
