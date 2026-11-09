@@ -532,7 +532,8 @@ static void oid_request(int is_set, ULONG oid, UCHAR FAR *dat, USHORT dlen)
             rtl8188eu_leave(&g_usbdev);
             return;
          }
-         if (g_authmode != 7UL || g_encstat != 6UL) {   /* our RSN IE is WPA2-PSK / CCMP */
+         g_want_open = (UCHAR)((g_authmode == 0UL || g_authmode == 2UL) && g_encstat == 1UL);   /* Open or AutoSwitch + EncryptionDisabled: an unencrypted network (the Wireless LAN Monitor sends AutoSwitch) */
+         if (!g_want_open && (g_authmode != 7UL || g_encstat != 6UL)) {   /* otherwise our RSN IE is WPA2-PSK / CCMP */
             rtl8188eu_diag_set(6, (USHORT)g_authmode, (USHORT)g_encstat);   /* reason 6: wrong mode set by the caller */
             g_st = NDIS_STATUS_FAILURE;
             return;

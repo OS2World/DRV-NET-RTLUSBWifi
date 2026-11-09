@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### RTL8821AU
+* Unencrypted (open) networks. The driver only knew WPA2-PSK, so a profile without encryption (the Wireless LAN Monitor
+  sends AuthMode 2 / AutoSwitch with encryption Disabled) was refused. An open join now sends an association request
+  without the privacy bit and RSN element, installs no keys (security off), sends data frames unprotected and accepts
+  unprotected data from the access point. New read-out counter `OPEN`. Tested: joins and association on 2.4 and 5 GHz
+  against a hotel network; the data path through a captive portal is not verified yet.
 * The DHCP lines (`STATUS=`, `IP=`, `MASK=`, ...) come first in the `\DEV\WRND32$` read-out. With the larger scan table
   of 0.1.4 the diagnostics filled the 3900-byte text buffer, the lease lines were cut off, and `rtl88eu_ip.cmd`
   logged `no lease:` at every renewal (once even a truncated netmask `255.255`; seen in a forum report, where the

@@ -394,7 +394,8 @@ void   rtl8188eu_dbg_probe(USHORT count, USHORT pad);   /* rtl_rx.c, debug comma
 #define PREFER_5GHZ 1   /* 1 = a 5 GHz access point of the wanted SSID wins when its signal is >= -65 dBm (10 dB bonus down to -75); a failed 5 GHz join falls back to 2.4 GHz */
 #define DBG_LATE_MAC 0   /* 1 = test only: the early address read is skipped, so the stack binds with the placeholder address */
 extern UCHAR g_mac_late;
-#define DIAG_COUNT 156
+extern UCHAR g_open, g_want_open;   /* rtl_rx.c: unencrypted network joined / being joined */
+#define DIAG_COUNT 157
 void   rtl8188eu_on_detach(void);               /* rtl_rx.c: forget link, keys and queues */
 void   rtl8188eu_nic_lock(void);                 /* rtl_nic.c: the request lock of the OID interface */
 void   rtl8188eu_nic_unlock(void);
