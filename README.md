@@ -16,7 +16,7 @@ two ways:
 
 They are built with **open-source tools only** (Open Watcom + NASM) and link no IBM code or libraries.
 
-> **Status: experimental, alpha 0.1.4a3.** They work on the author's test machines (real PCs with EHCI and xHCI
+> **Status: experimental, alpha 0.1.4a4.** They work on the author's test machines (real PCs with EHCI and xHCI
 > controllers, the ArcaOS SMP kernel, VirtualBox), but have not been tried widely. See [docs/TESTING.md](docs/TESTING.md).
 
 ## What works

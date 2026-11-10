@@ -23,7 +23,7 @@ copyright holder(s) before publishing.**
    `rt_ndis.c`, the synchronous transfer lock and the TX queue lock design in `rt_usb.c`, and the zero-copy transmit gather. The
    adopted code was reviewed and then changed substantially while testing (for example the TX lock no longer disables
    interrupts, and the waits are bounded).
-2. **Contributed patches in 0.1.4a1, 0.1.4a2 and 0.1.4a3 (settled).** Paul Smedley's pull requests of 2026-11-08 (DHCP read-out order, 5 GHz transmit power, IQ calibration, build tag; merged from psmedley/DRV-NET-RTLUSBWifi) are modifications of this project's GPL-2.0-only source and are distributed under the same licence. Andy Willis contributed the `wmake` makefiles (pull request #2, 2026-11-06; the files
+2. **Contributed patches in 0.1.4a1 to 0.1.4a4 (settled).** Paul Smedley's pull requests of 2026-11-08 (DHCP read-out order, 5 GHz transmit power, IQ calibration, build tag; merged from psmedley/DRV-NET-RTLUSBWifi) are modifications of this project's GPL-2.0-only source and are distributed under the same licence. Andy Willis contributed the `wmake` makefiles (pull request #2, 2026-11-06; the files
    carry an SPDX `GPL-2.0-only` header). Paul Smedley posted three patches on the OS2World forum (2026-11-01): the 5 GHz
    frequency report and the transmit watchdogs for both drivers. He wrote them against this project's source, so they are
    modifications of GPL-2.0-only code and are distributed with it under the same licence, GPL-2.0-only (confirmed by the project

@@ -50,6 +50,10 @@ and a lost-gain problem near the access point.
 runs on ArcaMiix. `TXQRE` (a CPU re-entered the transmit lock): 1-3 per run. Both CPUs and more (APIC ids 0-3) were seen
 running the transmit and receive paths.
 
+## 0.1.4a4 alpha (2026-11-09): what has been run
+
+* Only the boot messages changed since 0.1.4a3; both drivers were rebuilt. The 0.1.4a3 results below still stand for the unchanged code.
+
 ## 0.1.4a3 alpha (2026-11-08): what has been run
 
 * Open (unencrypted) networks: joined and got a DHCP lease from a hotel's open network (SSID with a captive portal) on 2.4 GHz

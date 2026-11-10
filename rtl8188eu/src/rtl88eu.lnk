@@ -2,7 +2,7 @@
 format os2 dll
 name RTL88EU.OS2
 option quiet,map=RTL88EU.map,verbose,caseexact,eliminate,nodefaultlibs
-option description '@#RTL88EU-OS2:0.1.4a3#@##1## 08 Nov 2026 12:00:00     ARCAOS-DEV::en:US:2:::@@Realtek RTL8188EU USB WiFi driver for OS/2 and ArcaOS (GenMAC + NDIS)'
+option description '@#RTL88EU-OS2:0.1.4a4#@##1## 09 Nov 2026 12:00:00     ARCAOS-DEV::en:US:2:::@@Realtek RTL8188EU USB WiFi driver for OS/2 and ArcaOS (GenMAC + NDIS)'
 segment class 'CODE' iopl
 import DOSOPEN DOSCALLS.70
 import DOSCLOSE DOSCALLS.59

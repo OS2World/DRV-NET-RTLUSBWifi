@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.4a4 (2026-11-09)
+
+Alpha: 0.1.4a3 plus a change to the boot messages only. No change to the driver's behaviour.
+
+### Both drivers
+* The `/V` boot messages are shorter than the 80-column screen and every line starts with the driver name (`RTL8821AU:` /
+  `RTL88EU:`): the long ones are split into two lines instead of wrapping in the middle of a word. The line telling you how to
+  load the firmware (`copy /b ...`) is gone from the RTL8821AU messages; STARTUP.CMD / the install guide still carry it.
+
 ## 0.1.4a3 (2026-11-08)
 
 Alpha: 0.1.4a2 plus the changes below. The DHCP read-out fix, the 5 GHz transmit power and the IQ calibration, and the build tag
