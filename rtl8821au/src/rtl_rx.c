@@ -346,6 +346,59 @@ static UCHAR  g_rxsw;
  * make the TCP receiver send duplicate ACKs, and the sender takes them for loss and slows down. One cache entry per
  * traffic identifier (QoS TID 0..15, 16 = non-QoS). */
 static USHORT g_sc[17];
+
+/* Block Ack receive (R21_BA). With an agreement for a traffic identifier the access point sends A-MPDUs: several frames
+ * per channel access, one Block Ack for all of them (the chip sends it). A frame lost in a burst is resent in a later
+ * one, after frames that follow it, so frames of that TID can arrive out of order. There is no reorder buffer: frames
+ * go up as they arrive (TCP puts segments back in order), and the duplicate filter remembers the last BA_SEEN sequence
+ * numbers of the TID instead of only the last one. Counters for the read-out: frames of an agreement TID, frames that
+ * came after a later one (out of order), sequence gaps, duplicates caught by the window, agreements ended by the AP. */
+#define BA_SEEN 16                                  /* a power of two, at least the window size */
+static UCHAR  g_ba_on;                              /* bit n: an agreement for TID n is active */
+static USHORT g_ba_seen[8][BA_SEEN];
+static UCHAR  g_ba_seen_i[8];
+static USHORT g_ba_last[8];                         /* newest sequence number seen per TID */
+USHORT        g_ba_rx, g_ba_ooo, g_ba_gap, g_ba_dupw, g_ba_del;
+
+static void ba_start(UCHAR tid, USHORT ssn)        /* a new agreement: frames start at sequence number ssn */
+{
+   USHORT q;
+
+   for (q = 0; q < BA_SEEN; q++)
+      g_ba_seen[tid][q] = 0xFFFF;
+   g_ba_seen_i[tid] = 0;
+   g_ba_last[tid] = (USHORT)((ssn - 1) & 0x0FFF);
+   g_ba_on = (UCHAR)(g_ba_on | (1 << tid));
+}
+
+/* Duplicate filter and ordering counters for a TID with an agreement. 1 = a copy of a frame we already have. */
+static int ba_dup(UCHAR tid, USHORT sc, UCHAR retry)
+{
+   USHORT seq = (USHORT)(sc >> 4), q, d;
+
+   g_ba_rx++;
+   if (retry)
+      for (q = 0; q < BA_SEEN; q++)
+         if (g_ba_seen[tid][q] == seq) {
+            g_ba_dupw++;
+            return 1;
+         }
+   g_ba_seen[tid][g_ba_seen_i[tid]] = seq;
+   g_ba_seen_i[tid] = (UCHAR)((g_ba_seen_i[tid] + 1) & (BA_SEEN - 1));
+   d = (USHORT)((seq - g_ba_last[tid]) & 0x0FFF);
+   if (d != 0 && d < 2048) {                       /* newer than everything so far */
+      if (d > 1)
+         g_ba_gap++;                               /* one or more frames skipped (they may still come) */
+      g_ba_last[tid] = seq;
+   } else if (d != 0)
+      g_ba_ooo++;                                  /* older than one already delivered: out of order */
+   return 0;
+}
+
+UCHAR rtl8188eu_ba_on(void)
+{
+   return g_ba_on;
+}
 static USHORT g_ndup;
 static ULONG  g_icmp_t0;                            /* ms clock when the last ICMP echo request reached the protocol stack */
 static USHORT g_ntx_call, g_ntx_ok, g_ntx_nokey, g_ntx_noslot;
@@ -470,11 +523,18 @@ static void rx_data_frame(UCHAR *f, USHORT len)
       USHORT sc  = (USHORT)(f[22] | (f[23] << 8));
       UCHAR  tid = (UCHAR)((f[0] & 0x80) ? (f[24] & 0x0F) : 16);
 
-      if ((f[1] & 0x08) && g_sc[tid] == sc) {     /* retransmission of the frame we already have */
-         g_ndup++;
-         return;
+      if (tid < 8 && (g_ba_on & (1 << tid))) {   /* Block Ack agreement: frames may come out of order */
+         if (ba_dup(tid, sc, (UCHAR)(f[1] & 0x08))) {
+            g_ndup++;
+            return;
+         }
+      } else {
+         if ((f[1] & 0x08) && g_sc[tid] == sc) {  /* retransmission of the frame we already have */
+            g_ndup++;
+            return;
+         }
+         g_sc[tid] = sc;
       }
-      g_sc[tid] = sc;
    }
    g_nd++;
    prot = (UCHAR)((f[1] & 0x40) ? 1 : 0);
@@ -501,10 +561,12 @@ static void rx_data_frame(UCHAR *f, USHORT len)
 }
 
 /* Block Ack (ADDBA) requests from the access point. Once we join as an HT client the access point may ask to set up a
- * Block Ack agreement for A-MPDU aggregation. Receiving A-MPDUs needs a reorder buffer that this driver does not have yet,
- * so the request is declined (status 37, "the request has been declined"); the access point then sends single frames,
- * at HT rates. Latest request only; g_ba_req / g_ba_tx count requests seen and answers sent. */
+ * Block Ack agreement for A-MPDU aggregation. With R21_BA the request is accepted and the access point sends A-MPDUs
+ * (frames go up as they arrive, see ba_dup); without it, the request is declined (status 37) and the access point sends
+ * single frames, at HT rates. Latest request only; g_ba_req / g_ba_tx count requests seen and answers sent. */
 static volatile UCHAR g_ba_pend;
+static UCHAR  g_ba_acc;                          /* the pending answer accepts (1) or declines (0) */
+UCHAR         g_r21_ba = R21_BA;                 /* 1 = accept Block Ack agreements (A-MPDU receive), 0 = decline */
 static UCHAR  g_ba_tok, g_ba_par[2], g_ba_tmo[2];
 static ULONG  g_ba_t0;                           /* ms clock when the pending request arrived */
 UCHAR         g_ba_tid = 0xFF;
@@ -584,17 +646,30 @@ static void note_frame(UCHAR *f, USHORT len, signed char rssi)
             }
          } else if (sub == 0xD0 && len >= 33 && f[24] == 3 && f[25] == 0) {
             /* action, Block Ack category, ADDBA request: dialog token, BA parameter set, timeout, start sequence.
-             * Answered (declined) from task time by rtl8188eu_ba_tick: this runs in the receive path, which must not
-             * block on a USB transfer. */
+             * Accepted (R21_BA) or declined; the answer goes out from the context hook (rtl8188eu_ba_hook), since this
+             * runs in the receive path, which must not block on a USB transfer. Nothing in the chip needs setting up for
+             * an agreement: it sends the Block Acks itself (Realtek's issue_addba_rsp programs no register either). */
             g_ba_req++;
             g_ba_tok = f[26];
             g_ba_par[0] = f[27]; g_ba_par[1] = f[28];
             g_ba_tmo[0] = f[29]; g_ba_tmo[1] = f[30];
             g_ba_tid = (UCHAR)((f[27] >> 2) & 0x0F);
             g_ba_t0 = rtl8188eu_ms();
+            g_ba_acc = (UCHAR)(g_r21_ba && g_ba_tid < 8);
+            if (g_ba_acc)                       /* the access point starts sending A-MPDUs once it has our answer */
+               ba_start(g_ba_tid, (USHORT)((f[31] | (f[32] << 8)) >> 4));
             g_ba_pend = 1;
             ndis_kick();                         /* answer within milliseconds: the access point may hold this
                                                   * traffic identifier's frames until it has our answer */
+         } else if (sub == 0xD0 && len >= 30 && f[24] == 3 && f[25] == 2) {
+            /* DELBA: the agreement for a TID ends (parameter set bits 15:12 = TID) */
+            UCHAR dt = (UCHAR)(f[27] >> 4);
+
+            if (dt < 8) {
+               g_ba_on = (UCHAR)(g_ba_on & ~(1 << dt));
+               g_sc[dt] = 0xFFFF;
+            }
+            g_ba_del++;
          } else if (sub == 0xC0 || sub == 0xA0) {
             USHORT why = (USHORT)(f[24] | (f[25] << 8));
 
@@ -1273,19 +1348,29 @@ static int tx_deauth(usb_dev_t *dev, UCHAR *bssid)
    return tx_mgmt(dev, f, 26, 0);
 }
 
-/* ADDBA response declining the access point's request (category 3 Block Ack, action 1): dialog token, status 37,
- * the request's BA parameter set and timeout echoed back. Built into f (33 bytes). */
+/* ADDBA response (category 3 Block Ack, action 1): dialog token, status, BA parameter set, timeout. Declined: status 37
+ * with the request's parameters echoed. Accepted: status 0; the parameter set keeps the request's policy and TID, clears
+ * A-MSDU-in-A-MPDU (bit 0), and sets the buffer size (bits 15:6) to the request's, at most R21_BA_WIN (0 in the request
+ * means "any"). Built into f (33 bytes). */
 static void addba_decline_build(UCHAR *f)
 {
-   USHORT i;
+   USHORT i, par = (USHORT)(g_ba_par[0] | (g_ba_par[1] << 8)), win;
 
    for (i = 0; i < 33; i++) f[i] = 0;
    mgmt_hdr(f, 0xD0, g_jbssid);
    f[24] = 3;                                     /* category: Block Ack   */
    f[25] = 1;                                     /* ADDBA response        */
    f[26] = g_ba_tok;
-   f[27] = 37;  f[28] = 0;                        /* status: request declined */
-   f[29] = g_ba_par[0]; f[30] = g_ba_par[1];
+   if (g_ba_acc) {
+      win = (USHORT)(par >> 6);
+      if (win == 0 || win > R21_BA_WIN)
+         win = R21_BA_WIN;
+      par = (USHORT)((par & 0x003E) | (win << 6));
+      f[27] = 0;   f[28] = 0;                     /* status: success */
+   } else {
+      f[27] = 37;  f[28] = 0;                     /* status: request declined */
+   }
+   f[29] = (UCHAR)(par & 0xFF); f[30] = (UCHAR)(par >> 8);
    f[31] = g_ba_tmo[0]; f[32] = g_ba_tmo[1];
 }
 
@@ -1360,11 +1445,11 @@ void rtl8188eu_ba_tick(usb_dev_t *dev)
 /* HT capabilities element (802.11-2016 9.4.2.56) for one stream at 20 MHz:
  *   HT capability information 0x002C: SM power save disabled (bits 3:2 = 3), short GI at 20 MHz (bit 5); no 40 MHz,
  *     no LDPC, no STBC, no Greenfield, maximum A-MSDU 3839 bytes (rx_amsdu handles those)
- *   A-MPDU parameters 0x03: maximum A-MPDU length 64 KB, no minimum spacing (no agreement is accepted yet anyway)
+ *   A-MPDU parameters R21_AMPDU_PARAM: maximum A-MPDU length (bits 1:0, 8 KB << n) and minimum spacing (bits 4:2)
  *   supported MCS set: receive MCS 0-7, transmit MCS set defined and equal to the receive set
  * and the WMM information element (Wi-Fi WMM spec 2.2.1: OUI 00:50:F2, type 2, subtype 0, version 1, QoS info 0, no
  * U-APSD). Access points only use HT rates towards a QoS client, so the two go together. R21_HT 0 leaves both out. */
-static UCHAR g_htcap[28] = { 45, 26, 0x2C, 0x00, 0x03,
+static UCHAR g_htcap[28] = { 45, 26, 0x2C, 0x00, R21_AMPDU_PARAM,
                              0xFF, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01, 0, 0, 0,
                              0, 0, 0, 0, 0, 0, 0 };
 static UCHAR g_wmmie[9]  = { 0xDD, 7, 0x00, 0x50, 0xF2, 0x02, 0x00, 0x01, 0x00 };
@@ -1495,6 +1580,7 @@ int rtl8188eu_join(usb_dev_t *dev, UCHAR *want_bssid)
    g_curch = g_net[best].ch;
    rtl8821_iqk(dev, g_net[best].ch);                  /* firmware IQ calibration on the access point's channel */
    g_ba_pend = 0;                                     /* a Block Ack request from an earlier join is void */
+   g_ba_on = 0;                                       /* and so are its agreements */
 #if RUN_TXPOWER
    rtl8188eu_set_txpower(dev, g_net[best].ch);        /* per-rate power for this channel */
 #endif

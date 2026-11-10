@@ -458,12 +458,21 @@ extern UCHAR  g_r21_iqk, g_r21_iqk_c2h, g_r21_pa5g, g_r21_lna5g;
 extern volatile UCHAR g_r21_iqk_done;
 extern ULONG  g_r21_iqc[6];
 extern USHORT g_r21_h2c_busy;
-#define R21_HT    1     /* 1 = join as an HT (20 MHz, 1 stream) and WMM client; ADDBA requests are declined (rtl_rx.c) */
+#define R21_HT    1     /* 1 = join as an HT (20 MHz, 1 stream) and WMM client (rtl_rx.c) */
+/* Block Ack receive. R21_BA 1 accepts the access point's ADDBA request, so it can send A-MPDUs; 0 declines (frames
+ * single, as before). R21_BA_WIN: the largest buffer size we answer with. R21_AMPDU_PARAM: the HT capabilities' A-MPDU
+ * byte, maximum length 8 KB (about 5 full frames, so a burst fits the chip's receive buffer while the one bulk-IN
+ * request drains it) and no minimum spacing. Frames are passed up as they arrive: no reorder buffer (rtl_rx.c). */
+#define R21_BA          1
+#define R21_BA_WIN      8
+#define R21_AMPDU_PARAM 0x00
 void   rtl8188eu_ba_tick(usb_dev_t *dev);         /* rtl_rx.c: answer a pending ADDBA request (task time, request lock) */
 void   rtl8188eu_ba_hook(void);                   /* rtl_rx.c: the same from the context hook, without blocking */
 int    ndis_kick(void);                           /* rt_ndis.c: arm the context hook (0 = no hook)                */
 UCHAR  rtl8188eu_ht_state(void);                  /* rtl_rx.c: what the association response granted (read-out) */
-extern UCHAR  g_r21_ht, g_ba_tid;
+extern UCHAR  g_r21_ht, g_ba_tid, g_r21_ba;
+extern USHORT g_ba_rx, g_ba_ooo, g_ba_gap, g_ba_dupw, g_ba_del;
+UCHAR  rtl8188eu_ba_on(void);                    /* rtl_rx.c: bit n = Block Ack agreement for TID n */
 extern USHORT g_ba_req, g_ba_tx, g_ba_fail, g_ba_fast, g_ba_ms, g_amsdu_n, g_amsdu_sub, g_amsdu_bad;
 
 /* Version and build tag. DRV_BUILD names the change set a test build was made from (set it per branch / pull request), so

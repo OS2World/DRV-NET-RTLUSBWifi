@@ -362,6 +362,12 @@ USHORT rtl8188eu_dhcp_read(ULONG phys, USHORT max)
       put_s(" TID="); put_dec(g_ba_tid);
       put_s(" AMSDU="); put_dec(g_amsdu_n); put_s("/"); put_dec(g_amsdu_sub); put_s("/"); put_dec(g_amsdu_bad);   /* frames / subframes / dropped */
       put_s("\r\n");
+      put_s("BAACC="); put_dec(g_r21_ba); put_s(" BAON=");        /* Block Ack receive: switch, TIDs with an agreement */
+      put_dec(rtl8188eu_ba_on());                                  /* (bit n = TID n); frames of those TIDs, out of     */
+      put_s(" BARX="); put_dec(g_ba_rx); put_s(" OOO="); put_dec(g_ba_ooo);   /* order, sequence gaps, duplicates */
+      put_s(" GAP="); put_dec(g_ba_gap); put_s(" DUPW="); put_dec(g_ba_dupw);  /* caught by the window, DELBAs   */
+      put_s(" DELBA="); put_dec(g_ba_del);
+      put_s("\r\n");
    }
    {  /* scan table */
       USHORT n, q;
