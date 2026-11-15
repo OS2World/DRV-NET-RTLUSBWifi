@@ -164,7 +164,7 @@ WORD ndis_is_open(void)
 /* ---- receive: buffer pool + ReceiveChain indication ------------------------------
  * Called from the USB completion context (task time, may not block). A buffer stays busy until ReceiveRelease
  * when the protocol returns WAIT_FOR_RELEASE. */
-#define RXP_N     6
+#define RXP_N     8                       /* was 6: the Block Ack reorder buffer releases runs of frames; with 6 it waited for free buffers (RO WAIT, HKMAXQ=6) */
 #define RXP_SIZE  1520
 static UCHAR            g_rxp[RXP_N][RXP_SIZE];
 static UCHAR            g_rxp_busy[RXP_N];
@@ -214,6 +214,17 @@ USHORT ndis_diag(USHORT i)
    if (i == 15) return g_rc_ipp;
    if (i == 16) return g_rc_dst;
    return 0xFFFF;
+}
+
+/* Free receive buffers right now (the reorder buffer checks before it releases a run of held frames). */
+USHORT ndis_rx_avail(void)
+{
+   USHORT i, n = 0;
+
+   for (i = 0; i < RXP_N; i++)
+      if (!g_rxp_busy[i])
+         n++;
+   return n;
 }
 
 UCHAR *ndis_rx_get(USHORT *handle)
@@ -546,16 +557,18 @@ void __cdecl ndis_hook_c(void)
 {
    g_hk_run++;
    rtl8188eu_ba_hook();                            /* a pending ADDBA decline goes out first (task time, does not block) */
-   while (g_q_tail != g_q_head) {
-      USHORT i = (USHORT)(g_q_tail % RXP_N), h, len;
+   do {
+      while (g_q_tail != g_q_head) {
+         USHORT i = (USHORT)(g_q_tail % RXP_N), h, len;
 
-      if (g_ind_off != 0)                          /* the protocol has indications off: IndicationOn re-arms us */
-         return;
-      h   = g_q_h[i];
-      len = g_q_len[i];
-      g_q_tail++;
-      deliver(h, len);
-   }
+         if (g_ind_off != 0)                       /* the protocol has indications off: IndicationOn re-arms us */
+            return;
+         h   = g_q_h[i];
+         len = g_q_len[i];
+         g_q_tail++;
+         deliver(h, len);
+      }
+   } while (rtl8188eu_ro_kick());                  /* buffers are free again: held frames waiting for them go up (queued above) */
 }
 
 static void arm_hook(void)

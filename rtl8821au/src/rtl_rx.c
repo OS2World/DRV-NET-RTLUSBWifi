@@ -347,6 +347,11 @@ static UCHAR  g_rxsw;
  * traffic identifier (QoS TID 0..15, 16 = non-QoS). */
 static USHORT g_sc[17];
 
+/* Diagnostics for the Block Ack test (read-out line AGG): frames that came in an A-MPDU (any address / to us), data
+ * frames to us by kind (QoS, plain), QoS data frames to us per TID. */
+static UCHAR  g_rxagg;                             /* set by rx_parse for the frame being handled */
+USHORT        g_agg_all, g_agg_me, g_dq_qos, g_dq_plain, g_dq_tid[8];
+
 /* Block Ack receive (R21_BA). With an agreement for a traffic identifier the access point sends A-MPDUs: several frames
  * per channel access, one Block Ack for all of them (the chip sends it). A frame lost in a burst is resent in a later
  * one, after frames that follow it, so frames of that TID can arrive out of order. There is no reorder buffer: frames
@@ -360,6 +365,10 @@ static UCHAR  g_ba_seen_i[8];
 static USHORT g_ba_last[8];                         /* newest sequence number seen per TID */
 USHORT        g_ba_rx, g_ba_ooo, g_ba_gap, g_ba_dupw, g_ba_del;
 
+static void ro_reset(USHORT ssn);
+static void ro_stop(void);
+static void ro_bar(UCHAR *f, USHORT len);
+
 static void ba_start(UCHAR tid, USHORT ssn)        /* a new agreement: frames start at sequence number ssn */
 {
    USHORT q;
@@ -369,6 +378,8 @@ static void ba_start(UCHAR tid, USHORT ssn)        /* a new agreement: frames st
    g_ba_seen_i[tid] = 0;
    g_ba_last[tid] = (USHORT)((ssn - 1) & 0x0FFF);
    g_ba_on = (UCHAR)(g_ba_on | (1 << tid));
+   if (tid == 0)
+      ro_reset(ssn);
 }
 
 /* Duplicate filter and ordering counters for a TID with an agreement. 1 = a copy of a frame we already have. */
@@ -504,10 +515,12 @@ static void rx_amsdu(UCHAR *p, USHORT n, UCHAR prot)
    }
 }
 
+static void rx_data_body(UCHAR *f, USHORT len);
+static void ro_frame(UCHAR *f, USHORT len, USHORT seq);
+
 static void rx_data_frame(UCHAR *f, USHORT len)
 {
-   USHORT hl, i, tail = 0;
-   UCHAR  prot;
+   USHORT i;
 
    g_led_act = 1;
    if (f[0] & 0x40)                               /* null / no-data subtypes */
@@ -519,6 +532,15 @@ static void rx_data_frame(UCHAR *f, USHORT len)
       for (i = 0; i < 6; i++)
          if (f[4 + i] != g_mymac[i])
             return;
+   if ((f[4] & 1) == 0) {                         /* unicast to us: what kind of frame, did it come aggregated */
+      if (g_rxagg)
+         g_agg_me++;
+      if (f[0] & 0x80) {
+         g_dq_qos++;
+         g_dq_tid[f[24] & 0x07]++;
+      } else
+         g_dq_plain++;
+   }
    {
       USHORT sc  = (USHORT)(f[22] | (f[23] << 8));
       UCHAR  tid = (UCHAR)((f[0] & 0x80) ? (f[24] & 0x0F) : 16);
@@ -535,7 +557,21 @@ static void rx_data_frame(UCHAR *f, USHORT len)
          }
          g_sc[tid] = sc;
       }
+      if (tid == 0 && (g_ba_on & 1)) {           /* the download's TID: through the reorder buffer */
+         ro_frame(f, len, (USHORT)(sc >> 4));
+         return;
+      }
    }
+   rx_data_body(f, len);
+}
+
+/* The data frame after the address checks and the duplicate filter: decryption state, header length, A-MSDU, delivery.
+ * Called directly, or by the reorder buffer when a held frame's turn comes (with g_rxsw set as it was for that frame). */
+static void rx_data_body(UCHAR *f, USHORT len)
+{
+   USHORT hl, tail = 0;
+   UCHAR  prot;
+
    g_nd++;
    prot = (UCHAR)((f[1] & 0x40) ? 1 : 0);
    if (prot) { g_np++; if (g_rxsw) g_nsw++; }
@@ -558,6 +594,221 @@ static void rx_data_frame(UCHAR *f, USHORT len)
       return;
    }
    rx_msdu(f + 4, f + 16, f + hl, (USHORT)(len - tail - hl), prot);
+}
+
+/* ===== Reorder buffer for TID 0 under a Block Ack agreement ==================================================
+ * A frame lost in an A-MPDU is resent in a later one, after frames that follow it. Passed up as they arrive, those
+ * frames reach TCP out of order (4% of them in the first test), TCP answers with duplicate ACKs and the server slows
+ * down. So frames of TID 0 (the download) are put back in sequence order first, as every 802.11 stack does
+ * (IEEE 802.11-2016 10.24.7, the receive reordering buffer; Linux mac80211 ieee80211_sta_manage_reorder_buf).
+ *   g_ro_head  the next sequence number to deliver. A frame for it goes up at once, followed by any held frames that now
+ *              follow on. A frame up to RO_SLOTS - 1 ahead is held. One further ahead slides the window: held frames
+ *              go up in order and the missing ones are given up (counted as skipped). One behind the window goes up as
+ *              it is (late).
+ *   release    there is no timer in this driver, so held frames are also released (in order, skipping the gap) when the
+ *              access point sends a Block Ack Request for a later starting sequence number, and when a frame arrives
+ *              while the oldest held one has waited more than R21_RO_MS. A burst that ends with a gap therefore waits
+ *              for the next frame, at worst a TCP retransmission.
+ * Held frames live outside the data segment (which is nearly full): RO_SLOTS x RO_SLOT bytes of physical memory from
+ * INIT, reached through a GDT selector that the first join maps (task time, ring 0). Without it, frames go up
+ * as they arrive, as before. A held frame is copied back into g_ro_tmp and handed to rx_data_body when its turn comes.
+ * Everything here runs in the receive path. */
+#define RO_SLOTS   R21_BA_WIN                      /* a power of two (16: 25.6 KB of physical memory) */
+#define RO_SLOT    1600                            /* largest frame held: 802.11 + CCMP headers + 1500 bytes */
+static ULONG  g_ro_phys;
+static USHORT g_ro_sel;
+static UCHAR  g_ro_alloc, g_ro_mapped, g_ro_on;
+static USHORT g_ro_head;
+static UCHAR  g_ro_used[RO_SLOTS], g_ro_sw[RO_SLOTS], g_ro_n;
+static USHORT g_ro_len[RO_SLOTS];
+static ULONG  g_ro_t0;                             /* when the oldest held frame was stored */
+static UCHAR  g_ro_tmp[RO_SLOT];
+USHORT        g_ro_held, g_ro_rel, g_ro_skip, g_ro_stale, g_ro_bar, g_ro_late, g_ro_drop, g_ro_wait;
+USHORT        g_ro_kick, g_ro_full;                /* frames released from the context hook; in-order frames held for want of a buffer */
+static USHORT g_rx_owner;                          /* receive path lock: the USB completion (rtl_rx_feed) and the hook (ro_kick) */
+UCHAR         g_ro_max;
+
+/* INIT (ring 3): the memory and a selector; the mapping waits for ring 0 (ro_map, from the join). 0 = ok. */
+int rtl8188eu_ro_alloc(void)
+{
+   if (rt_dh_alloc_phys((ULONG)RO_SLOTS * RO_SLOT, 0, &g_ro_phys) != 0)
+      return -1;
+   if (rt_dh_alloc_gdt(&g_ro_sel, 1) != 0)
+      return -1;
+   g_ro_alloc = 1;
+   return 0;
+}
+
+static void ro_map(void)                           /* task time, ring 0 (start of a join) */
+{
+   if (g_ro_alloc && !g_ro_mapped && rt_dh_phys_to_gdt(g_ro_phys, (USHORT)(RO_SLOTS * RO_SLOT), g_ro_sel) == 0)
+      g_ro_mapped = 1;
+}
+
+static void ro_reset(USHORT ssn)                   /* a new agreement for TID 0: frames start at ssn */
+{
+   USHORT k;
+
+   for (k = 0; k < RO_SLOTS; k++)
+      g_ro_used[k] = 0;
+   g_ro_n = 0;
+   g_ro_head = (USHORT)(ssn & 0x0FFF);
+   g_ro_on = g_ro_mapped;
+}
+
+static void ro_out(USHORT k)                       /* hand held slot k up, in its turn */
+{
+   UCHAR sw = g_rxsw;
+
+   rt_movmem((PVOID)g_ro_tmp, MAKEP(g_ro_sel, k * RO_SLOT), g_ro_len[k]);
+   g_ro_used[k] = 0;
+   g_ro_n--;
+   g_rxsw = g_ro_sw[k];
+   rx_data_body(g_ro_tmp, g_ro_len[k]);
+   g_rxsw = sw;
+   g_ro_rel++;
+}
+
+/* Deliver the held frames that now follow on. The NDIS side has only a few receive buffers, freed when the context
+ * hook runs, so a run stops while none is free (g_ro_wait). The hook resumes it once it has delivered the queued frames
+ * (rtl8188eu_ro_kick); otherwise the next frame of the TID does. */
+static void ro_follow(void)
+{
+   USHORT k;
+
+   for (;;) {
+      k = (USHORT)(g_ro_head & (RO_SLOTS - 1));
+      if (!g_ro_used[k])
+         break;
+      if (ndis_is_open() && ndis_rx_avail() == 0) {
+         g_ro_wait++;
+         break;
+      }
+      ro_out(k);
+      g_ro_head = (USHORT)((g_ro_head + 1) & 0x0FFF);
+   }
+   if (g_ro_n)
+      g_ro_t0 = rtl8188eu_ms();                    /* the frames still held wait from now */
+}
+
+static void ro_advance(USHORT nh)                  /* move the window start to nh: release in order, skip the gaps */
+{
+   USHORT d = (USHORT)((nh - g_ro_head) & 0x0FFF), j, k;
+
+   if (d == 0 || d >= 2048)
+      return;
+   for (j = 0; j < d && j < RO_SLOTS; j++) {
+      k = (USHORT)((g_ro_head + j) & (RO_SLOTS - 1));
+      if (g_ro_used[k])
+         ro_out(k);
+      else
+         g_ro_skip++;
+   }
+   g_ro_head = (USHORT)(nh & 0x0FFF);
+   ro_follow();
+}
+
+static void ro_frame(UCHAR *f, USHORT len, USHORT seq)
+{
+   USHORT d, k, j;
+
+   if (!g_ro_on) {
+      rx_data_body(f, len);
+      return;
+   }
+   if (g_ro_n && g_ro_used[g_ro_head & (RO_SLOTS - 1)])
+      ro_follow();                                 /* a run that stopped for want of a receive buffer */
+   if (g_ro_n && !g_ro_used[g_ro_head & (RO_SLOTS - 1)] && (long)(rtl8188eu_ms() - g_ro_t0) > (long)R21_RO_MS) {
+      g_ro_stale++;                                /* the missing frame is not coming: go on from the first held one */
+      for (j = 1; j < RO_SLOTS; j++)
+         if (g_ro_used[(g_ro_head + j) & (RO_SLOTS - 1)])
+            break;
+      ro_advance((USHORT)((g_ro_head + j) & 0x0FFF));
+   }
+   d = (USHORT)((seq - g_ro_head) & 0x0FFF);
+   if (d >= 2048) {                                /* behind the window: already given up on, pass it up as it is */
+      g_ro_late++;
+      rx_data_body(f, len);
+      return;
+   }
+   if (d >= RO_SLOTS) {                            /* beyond the window: slide it so this frame is its last slot */
+      ro_advance((USHORT)((seq - (RO_SLOTS - 1)) & 0x0FFF));
+      d = (USHORT)((seq - g_ro_head) & 0x0FFF);
+   }
+   if (d == 0 && !(ndis_is_open() && ndis_rx_avail() == 0)) {
+      rx_data_body(f, len);
+      g_ro_head = (USHORT)((g_ro_head + 1) & 0x0FFF);
+      ro_follow();
+      return;
+   }
+   if (d == 0)
+      g_ro_full++;                                 /* in order, but no receive buffer is free: hold it, the hook sends it up */
+   k = (USHORT)(seq & (RO_SLOTS - 1));
+   if (g_ro_used[k]) {                             /* a copy of a frame already held */
+      g_ro_drop++;
+      return;
+   }
+   if (len > RO_SLOT) {                            /* too large to hold (not expected): pass it up now */
+      rx_data_body(f, len);
+      return;
+   }
+   rt_movmem(MAKEP(g_ro_sel, k * RO_SLOT), (PVOID)f, len);
+   g_ro_used[k] = 1;
+   g_ro_sw[k] = g_rxsw;
+   g_ro_len[k] = len;
+   if (g_ro_n == 0)
+      g_ro_t0 = rtl8188eu_ms();
+   g_ro_n++;
+   g_ro_held++;
+   if (g_ro_n > g_ro_max)
+      g_ro_max = g_ro_n;
+}
+
+/* Block Ack Request from the access point for TID 0: it will not resend frames before ssn. */
+static void ro_bar(UCHAR *f, USHORT len)
+{
+   USHORT q, ssn;
+
+   if (len < 20 || !g_ro_on || (f[17] >> 4) != 0)
+      return;
+   for (q = 0; q < 6; q++)
+      if (f[4 + q] != g_mymac[q] || f[10 + q] != g_jbssid[q])
+         return;
+   g_ro_bar++;
+   ssn = (USHORT)((f[18] | (f[19] << 8)) >> 4);
+   ro_advance(ssn);
+}
+
+/* From the context hook (rt_ndis.c), once it has delivered the queued frames and so freed receive buffers: resume a
+ * release that stopped for want of one. Interrupts stay off while the receive path lock is held, so the USB completion
+ * cannot run in between on this CPU; on another CPU it waits for the lock (at most a window of frames). If the
+ * completion holds the lock, the next frame resumes the run instead. Returns 1 when frames went up. */
+int rtl8188eu_ro_kick(void)
+{
+   USHORT fl, rel;
+
+   if (!g_ro_on || !g_ro_n || !g_ro_used[g_ro_head & (RO_SLOTS - 1)] || ndis_rx_avail() == 0)
+      return 0;
+   fl = rt_irq_save();
+   if (rt_lock_try(&g_rx_owner, (USHORT)(rt_cpu_id() + 1))) {
+      rt_irq_restore(fl);
+      return 0;
+   }
+   rel = g_ro_rel;
+   if (g_ro_on)
+      ro_follow();
+   rel = (USHORT)(g_ro_rel - rel);
+   rt_lock_release(&g_rx_owner);
+   rt_irq_restore(fl);
+   g_ro_kick = (USHORT)(g_ro_kick + rel);
+   return rel != 0;
+}
+
+static void ro_stop(void)                          /* the agreement ended: everything held goes up, in order */
+{
+   if (g_ro_on && g_ro_n)
+      ro_advance((USHORT)((g_ro_head + RO_SLOTS) & 0x0FFF));
+   g_ro_on = 0;
 }
 
 /* Block Ack (ADDBA) requests from the access point. Once we join as an HT client the access point may ask to set up a
@@ -587,6 +838,8 @@ static void note_frame(UCHAR *f, USHORT len, signed char rssi)
    g_nfrm++;
    if ((f[0] & 0x0C) == 0x04) {                     /* control frame (only passed on while a join is running) */
       g_dg_ctl++;
+      if ((f[0] & 0xF0) == 0x80)                    /* Block Ack Request */
+         ro_bar(f, len);
       if ((f[0] & 0xF0) == 0xD0 && len >= 10) {     /* ACK: receiver address = us -> our last frame reached an AP */
          USHORT q;
          UCHAR  me = 1;
@@ -666,6 +919,8 @@ static void note_frame(UCHAR *f, USHORT len, signed char rssi)
             UCHAR dt = (UCHAR)(f[27] >> 4);
 
             if (dt < 8) {
+               if (dt == 0)
+                  ro_stop();
                g_ba_on = (UCHAR)(g_ba_on & ~(1 << dt));
                g_sc[dt] = 0xFFFF;
             }
@@ -980,6 +1235,9 @@ static void rx_parse(void)
       if (remain < total)
          break;                                  /* wait for the rest            */
       g_rxsw = (UCHAR)(p[3] & 0x08);                /* RX desc dw0 bit 27: chip did not decrypt */
+      g_rxagg = (UCHAR)(p[5] & 0x80);               /* RX desc dw1 bit 15 (PAGGR): the frame came in an A-MPDU */
+      if (g_rxagg)
+         g_agg_all++;
       if (p[11] & 0x10)                           /* RX desc dw2 bit 28: a C2H report, not a received frame */
          rx_c2h(p + 24 + drv + sh, pl);
       else if (!(p[1] & 0xC0)) {                  /* skip CRC32 / ICV-error frames */
@@ -1035,7 +1293,7 @@ static USHORT rx_read(usb_dev_t *dev, UCHAR ep, USHORT tmo_ms)
 /* Completion context (task time, must not block): append to the stream and parse. */
 void rtl_rx_feed(UCHAR *buf, USHORT n)
 {
-   USHORT i;
+   USHORT i, held;
 
    g_dg_feeds++;
    if (n > g_dg_maxn) g_dg_maxn = n;
@@ -1049,7 +1307,10 @@ void rtl_rx_feed(UCHAR *buf, USHORT n)
    for (i = 0; i < n; i++)
       g_acc[g_accn + i] = buf[i];
    g_accn = (USHORT)(g_accn + n);
+   held = rt_lock_acquire(&g_rx_owner, (USHORT)(rt_cpu_id() + 1));   /* against rtl8188eu_ro_kick on another CPU */
    rx_parse();
+   if (!held)
+      rt_lock_release(&g_rx_owner);
 }
 
 void rtl8188eu_rx_engine_start(usb_dev_t *dev)
@@ -1580,7 +1841,10 @@ int rtl8188eu_join(usb_dev_t *dev, UCHAR *want_bssid)
    g_curch = g_net[best].ch;
    rtl8821_iqk(dev, g_net[best].ch);                  /* firmware IQ calibration on the access point's channel */
    g_ba_pend = 0;                                     /* a Block Ack request from an earlier join is void */
-   g_ba_on = 0;                                       /* and so are its agreements */
+   g_ro_on = 0;                                       /* and so are its agreements (reorder buffer first) */
+   g_ba_on = 0;
+   ro_map();                                          /* the reorder buffer's selector, before the first ADDBA
+                                                       * request (it comes with the association) */
 #if RUN_TXPOWER
    rtl8188eu_set_txpower(dev, g_net[best].ch);        /* per-rate power for this channel */
 #endif

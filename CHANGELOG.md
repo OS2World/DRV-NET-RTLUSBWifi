@@ -20,7 +20,7 @@
     `HT= GRANT= BA= FAST= BAMS= TID= AMSDU=` (GRANT: 1 = the association response has HT capabilities, 2 = HT
     operation, 4 = WMM parameters; BA: requests / declines sent / failed; FAST: declines sent from the context hook;
     BAMS: request to decline, the last one, ms; AMSDU: frames / subframes / dropped).
-* Block Ack receive (A-MPDU). The access point's ADDBA request is now accepted (`R21_BA 1`; 0 declines as before), so
+* Block Ack receive (A-MPDU), on (`R21_BA 1`; 0 declines as before). The access point's ADDBA request is accepted, so
   it can send A-MPDUs: several frames per channel access with one Block Ack, which the chip sends by itself. The
   answer keeps the request's policy and TID, turns A-MSDU-in-A-MPDU off, and limits the buffer to `R21_BA_WIN` (8)
   frames; the HT capabilities now advertise a maximum A-MPDU of 8 KB (`R21_AMPDU_PARAM`), about 5 full frames, so a
@@ -28,6 +28,41 @@
   agreement the duplicate filter remembers the last 16 sequence numbers instead of the last one. A DELBA from the
   access point ends the agreement. New read-out line `BAACC= BAON= BARX= OOO= GAP= DUPW= DELBA=` (switch, TIDs with
   an agreement, their frames, frames out of order, sequence gaps, duplicates caught, DELBAs received).
+  First test (5 GHz, `R21_BA 1`): three agreements were set up, but no frame arrived on an agreed TID, the access
+  point sent plain (non-QoS) data at MCS 4-5 and the download was slower (1.91 MB/s), hence the default. A second
+  read-out line `AGG ALL= ME= QOS= PLAIN= TID=` counts frames that came in an A-MPDU (receive descriptor PAGGR bit;
+  any address / to us), data frames to us by kind, and QoS data frames to us per TID.
+  Second test (`R21_BA 1`): nearly every download frame came in an A-MPDU (QoS, TID 0, MCS 7, no DELBA), so the
+  agreement works, but 4% arrived out of order and the download was slower than with the agreement declined (2.08
+  against 2.35 MB/s): TCP takes reordered segments for loss. Hence a reorder buffer for TID 0 (IEEE 802.11-2016
+  10.24.7): frames ahead of a missing one are held, up to 8, and go up in sequence order once it arrives. With no
+  timer in the driver, held frames are also released (skipping the gap) when the window has to slide, when the
+  access point sends a Block Ack Request, and when a frame arrives while the oldest held one has waited more than
+  `R21_RO_MS` (20 ms at first, now 100). The held frames live in 12.8 KB of physical memory allocated at INIT, outside the data
+  segment, which is nearly full. A release pauses while no NDIS receive buffer is free and resumes with the next
+  frame. New read-out line `RO HELD= REL= SKIP= STALE= BAR= LATE= DROP= MAX= WAIT=`.
+  Third test (5 GHz, reorder buffer on): 2.99 MB/s, the best so far (Windows 3.4-3.8). Every held frame went up
+  in order (`HELD=REL=3929`, no skips, no stale releases), but releases waited 48 times for a free NDIS receive
+  buffer and the delivery queue reached all 6. So the driver now has 8 NDIS receive buffers (`RXP_N`, was 6) and
+  6 USB transmit slots (`USB_TXSLOTS`, was 8; all transmit slots were never busy in any test), which leaves the
+  data segment about 200 bytes smaller. With 8 the delivery queue index also no longer jumps when its 16-bit counter wraps.
+  Fourth test (`ba-ro8`): 3.03 MB/s on 5 GHz (`WAIT=0`, all 8 receive buffers used), but 2.26 MB/s on 2.4 GHz,
+  against about 2.5 without the agreement. On 2.4 GHz (a busier channel: `XRQAVG` 31 against 8) 17.6% of the frames
+  came out of order, and the access point can't send more than the window (8) past a lost frame until it is
+  resent. Hence a 16-frame window (`R21_BA_WIN`; the reorder buffer follows it, 25.6 KB of physical memory) and a
+  16 KB maximum A-MPDU (`R21_AMPDU_PARAM` 0x01, about 10 full frames; the chip's receive buffer is 16 KB). The
+  6 USB transmit slots ran out 3 times in that download (`NTXNOSLOT`), so there are 7 again.
+  Fifth test (`ba-w16`): 3.07 MB/s on 5 GHz and 2.35 on 2.4 GHz. The window is used (`MAX=15`), but a release of
+  up to 15 frames is more than the 8 receive buffers: releases waited again (`WAIT` 469 and 910) and frames that
+  arrived in order with no buffer free were dropped (`DNDROP` 26 and 46). Now the context hook, once it has
+  delivered the queued frames and so freed their buffers, resumes a paused release itself instead of leaving it to
+  the next frame (`rtl8188eu_ro_kick`, under a receive path lock against the USB completion, with interrupts off),
+  and an in-order frame that finds no buffer is held in the reorder buffer instead of dropped. New read-out fields
+  `KICK=` (frames the hook sent up) and `FULL=` (in-order frames held for want of a buffer).
+  Sixth test (`ba-kick`): 3.29 MB/s on 5 GHz and 2.89 on 2.4 GHz, with no frame dropped for want of a buffer. A
+  slower 2.4 GHz run (about 2.5, dropping to 1.9) showed our own frames queuing in the chip for up to 97 ms (a busy
+  channel), and every gap the reorder buffer gave up on arrived later after all (`LATE=14`, `SKIP=14`). So a missing
+  frame is now waited for up to 100 ms (`R21_RO_MS`, was 20), the value Linux mac80211 uses.
 
 ## 0.1.4a4 (2026-11-09)
 

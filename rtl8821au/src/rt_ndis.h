@@ -268,6 +268,7 @@ struct RCBufferD {
 USHORT ndis_init(void);                    /* CMDInit: register with the Protocol Manager */
 WORD   ndis_is_open(void);                 /* adapter opened by the protocol?             */
 UCHAR *ndis_rx_get(USHORT *handle);        /* a free receive buffer (or NULL)             */
+USHORT ndis_rx_avail(void);                /* free receive buffers now                    */
 USHORT ndis_diag(USHORT i);                /* indication exclusion counters (INDTMO, INDRE, INDDROP)  */
 void   ndis_rx_put(USHORT handle, USHORT len);   /* indicate the filled buffer to the protocol */
 

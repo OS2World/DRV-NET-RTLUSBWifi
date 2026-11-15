@@ -166,6 +166,8 @@ static void rt_init(RP_INIT FAR *rp)
       say("RTL8821AU: the firmware buffer could not be allocated.");
       say("RTL8821AU: The adapter will not start.");
    }
+   if (rtl8188eu_ro_alloc() != 0)
+      say("RTL8821AU: the Block Ack reorder buffer could not be allocated (frames go up unordered).");
    tcom_always('I'); tcom_always('5');
    dhcp_init();                         /* GDT selector for returning the DHCP lease on a device read */
    dbg_init();

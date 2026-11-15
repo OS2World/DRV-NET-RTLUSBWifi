@@ -246,7 +246,7 @@ void usb_mdelay(USHORT ms);
  * not block) feeds rtl_rx_feed() and immediately resubmits. TX: a small pool of
  * slots; usb_tx_submit() posts one frame without waiting, completion frees it. */
 #define USB_RXBUF     2048
-#define USB_TXSLOTS   8
+#define USB_TXSLOTS   7                  /* was 8: 2 KB of DGROUP went to NDIS receive buffers (RXP_N); with 6, a 2.4 GHz download ran out 3 times (NTXNOSLOT) */
 #define USB_TXBUF     1620
 int    usb_rx_start(usb_dev_t *dev, UCHAR ep);
 void   usb_rx_stop(void);
@@ -462,16 +462,31 @@ extern USHORT g_r21_h2c_busy;
 /* Block Ack receive. R21_BA 1 accepts the access point's ADDBA request, so it can send A-MPDUs; 0 declines (frames
  * single, as before). R21_BA_WIN: the largest buffer size we answer with. R21_AMPDU_PARAM: the HT capabilities' A-MPDU
  * byte, maximum length 8 KB (about 5 full frames, so a burst fits the chip's receive buffer while the one bulk-IN
- * request drains it) and no minimum spacing. Frames are passed up as they arrive: no reorder buffer (rtl_rx.c). */
+ * request drains it) and no minimum spacing. Frames are passed up as they arrive: no reorder buffer (rtl_rx.c).
+ * Tests (5 GHz): with the agreement accepted, nearly every download frame arrives in an A-MPDU at MCS 7, but about 4%
+ * arrive out of order (a frame lost in a burst comes back in a later one), and without reordering the download was
+ * slower than with the agreement declined (2.08 against 2.35 MB/s). The reorder buffer for TID 0 (rtl_rx.c, ro_frame)
+ * puts them back in order; R21_BA 0 declines the agreement as before.
+ * With 8 frames and 8 KB, 2.4 GHz (a busy channel) lost about 1 frame in 6 in its burst, and the access point could not
+ * send past SSN + 8 while a lost one was resent: 2.26 MB/s, against 2.5 without the agreement (5 GHz: 3.03). Hence 16
+ * frames (RO_SLOTS in rtl_rx.c follows) and 16 KB (about 10 full frames; the chip's RX buffer is 16 KB). 8 and 0x00
+ * restore the earlier values. */
 #define R21_BA          1
-#define R21_BA_WIN      8
-#define R21_AMPDU_PARAM 0x00
+#define R21_BA_WIN      16      /* a power of two: the reorder buffer's slot count (rtl_rx.c, RO_SLOTS) */
+#define R21_AMPDU_PARAM 0x01    /* maximum A-MPDU 16 KB, no minimum spacing */
+#define R21_RO_MS       100     /* reorder buffer: a missing frame is given up on after this (rtl_rx.c, ro_frame). Was 20: on a
+                                  * busy 2.4 GHz channel every gap given up on arrived later (LATE = SKIP). Linux mac80211: 100 ms */
+int    rtl8188eu_ro_alloc(void);                  /* rtl_rx.c: INIT, the reorder buffer's memory (0 = ok) */
+extern USHORT g_ro_held, g_ro_rel, g_ro_skip, g_ro_stale, g_ro_bar, g_ro_late, g_ro_drop, g_ro_wait, g_ro_kick, g_ro_full;
+int    rtl8188eu_ro_kick(void);                   /* rtl_rx.c: from the context hook, resume a paused reorder release */
+extern UCHAR  g_ro_max;
 void   rtl8188eu_ba_tick(usb_dev_t *dev);         /* rtl_rx.c: answer a pending ADDBA request (task time, request lock) */
 void   rtl8188eu_ba_hook(void);                   /* rtl_rx.c: the same from the context hook, without blocking */
 int    ndis_kick(void);                           /* rt_ndis.c: arm the context hook (0 = no hook)                */
 UCHAR  rtl8188eu_ht_state(void);                  /* rtl_rx.c: what the association response granted (read-out) */
 extern UCHAR  g_r21_ht, g_ba_tid, g_r21_ba;
 extern USHORT g_ba_rx, g_ba_ooo, g_ba_gap, g_ba_dupw, g_ba_del;
+extern USHORT g_agg_all, g_agg_me, g_dq_qos, g_dq_plain, g_dq_tid[8];
 UCHAR  rtl8188eu_ba_on(void);                    /* rtl_rx.c: bit n = Block Ack agreement for TID n */
 extern USHORT g_ba_req, g_ba_tx, g_ba_fail, g_ba_fast, g_ba_ms, g_amsdu_n, g_amsdu_sub, g_amsdu_bad;
 
@@ -479,7 +494,7 @@ extern USHORT g_ba_req, g_ba_tx, g_ba_fail, g_ba_fast, g_ba_ms, g_amsdu_n, g_ams
  * a boot message, BLDLEVEL (rtl88eu.lnk, kept in step by hand) or a read-out file shows which driver produced it. The
  * read-out's BUILD= line adds the compile date and time. */
 #define DRV_VERSION   "0.1.4a4"
-#define DRV_BUILD     "ba-rx"
+#define DRV_BUILD     "release"
 
 /* The resident-end markers (rt_code_end / rt_data_end) are in rt_end.asm, linked last. */
 
