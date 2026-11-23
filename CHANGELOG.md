@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.1.5a1 (2026-11-22)
+
+Merges Paul Smedley's Block Ack work (psmedley/DRV-NET-RTLUSBWifi, pull request #5 and the pull requests before it): HT20 / WMM
+client, Block Ack receive with a reorder buffer, more NDIS receive buffers. The RTL88EU driver is unchanged apart from the
+version number.
 
 ### RTL8821AU
 * The dongle now joins as an HT (802.11n, 20 MHz, one stream) and WMM client, so the access point can send to it at HT

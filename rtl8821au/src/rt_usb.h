@@ -493,7 +493,7 @@ extern USHORT g_ba_req, g_ba_tx, g_ba_fail, g_ba_fast, g_ba_ms, g_amsdu_n, g_ams
 /* Version and build tag. DRV_BUILD names the change set a test build was made from (set it per branch / pull request), so
  * a boot message, BLDLEVEL (rtl88eu.lnk, kept in step by hand) or a read-out file shows which driver produced it. The
  * read-out's BUILD= line adds the compile date and time. */
-#define DRV_VERSION   "0.1.4a4"
+#define DRV_VERSION   "0.1.5a1"
 #define DRV_BUILD     "release"
 
 /* The resident-end markers (rt_code_end / rt_data_end) are in rt_end.asm, linked last. */

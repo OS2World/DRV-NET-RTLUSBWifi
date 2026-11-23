@@ -50,6 +50,18 @@ and a lost-gain problem near the access point.
 runs on ArcaMiix. `TXQRE` (a CPU re-entered the transmit lock): 1-3 per run. Both CPUs and more (APIC ids 0-3) were seen
 running the transmit and receive paths.
 
+## 0.1.5a1 alpha (2026-11-22): what has been run
+
+* Merged from Paul Smedley's fork (pull request #5 and the ones before it): HT20 / WMM client, Block Ack receive with a reorder buffer,
+  8 NDIS receive buffers, 7 USB transmit slots. He tested those on his hardware (5 GHz 3.3 MB/s, 2.4 GHz 2.9 MB/s in his last runs).
+* Here: both drivers build with `build.cmd` (no errors). The RTL8821AU data segment is 0xFE0E of 64 KB (498 bytes free).
+* RTL8821AU on ArcaMiix (real PC, SMP kernel, xHCI), installed over the 24only test build, rebooted: firmware loaded at the first try, joined
+  the author's dual-band router on 5 GHz channel 149 (-44 dBm) with an HT association (`HT=1 GRANT=7`), DHCP lease, Block Ack agreement for
+  TID 0 (`BAACC=1 BAON=33`). Three 20 MB HTTP downloads from a PC that is itself a Wi-Fi client of the same router (so every byte crosses
+  the air twice): 1.12, 1.58 and 1.57 MB/s. After the runs: 44,263 frames received in A-MPDUs, 316 out of order, all 456 held frames released in
+  order, `SKIP=0 STALE=0`, 1 frame dropped for want of a receive buffer (`DNDROP=1`, `WAIT=6`, `HKMAXQ=8`), no CRC errors, `NTXNOSLOT=0`.
+* Not run: 2.4 GHz, a wired server, a comparison with 0.1.4a4 on the same path, a long soak, the RTL88EU driver on hardware.
+
 ## 0.1.4a4 alpha (2026-11-09): what has been run
 
 * Only the boot messages changed since 0.1.4a3; both drivers were rebuilt. The 0.1.4a3 results below still stand for the unchanged code.
