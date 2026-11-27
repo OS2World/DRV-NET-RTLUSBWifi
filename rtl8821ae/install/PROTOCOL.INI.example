@@ -1,0 +1,30 @@
+[PROT_MAN]
+
+   DRIVERNAME = PROTMAN$
+
+[IBMLXCFG]
+
+   TCPIP_NIF = TCPIP.NIF
+   RTL8821AE_NIF = RTL8821AE.NIF
+
+[TCPIP_NIF]
+
+   DriverName = TCPIP$
+   Bindings = RTL8821AE_NIF
+
+[RTL8821AE_NIF]
+
+   DriverName = WRND32$
+
+   ; Your adapter's MAC (HWMAC= in the status text; RTWMAC.CMD writes it here). Recommended: TCP/IP copies the
+   ; address at bind time, which can be before the firmware has run and the driver has read the eFuse.
+   NETADDRESS = "000000000000"
+
+   ; Optional: join only an access point on this primary channel (testing).
+   ; CHANNEL = 6
+
+   ; Optional: receive aggregation (A-MPDU), 0 or 1 (default 1). Set 0 to compare, or if downloads stall.
+   ; AMPDU = 0
+
+   ; The RTL8821AE is a one-stream, 20 MHz station in this driver: STREAMS, MAXWIDTH, AGGTX, RATEADAPT and POWERSAVE
+   ; (options of the iwlwifi driver this one shares its OS/2 layer with) are read but change nothing here.

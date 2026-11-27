@@ -6,9 +6,12 @@ Native **WiFi drivers for OS/2 and ArcaOS** for Realtek USB dongles. Two drivers
 |---|---|---|---|
 | Realtek **RTL8188EUS** (the common 150 Mbit nano dongles) | `0BDA:8179` | `RTL88EU.OS2` | [`rtl8188eu/`](rtl8188eu/) |
 | TP-Link **Archer T2U Nano** (RTL8811AU / RTL8821AU) | `2357:011E` | `RTL8821AU.OS2` | [`rtl8821au/`](rtl8821au/) |
+| Realtek **RTL8821AE** PCIe cards (mini PCIe / M.2), *new, not yet tried on hardware* | PCI `10EC:8821` | `RTL8821AE.OS2` | [`rtl8821ae/`](rtl8821ae/) |
 
-Both are 16-bit device drivers that talk to the dongle directly over the OS/2 USB stack and show it to the system in
-two ways:
+The USB drivers are 16-bit device drivers that talk to the dongle directly over the OS/2 USB stack. The RTL8821AE driver
+is the same RTL8821A chip layer on PCI Express: it combines the chip code of `rtl8821au/` with the OS/2 PCI plumbing and
+chip-independent station of the [iwlwifi OS/2 driver](https://github.com/psmedley/iwlwifi), and the DMA rings of Linux
+rtlwifi (see [rtl8821ae/README.md](rtl8821ae/README.md)). All of them show the adapter to the system in two ways:
 
 * a **GenMAC-compatible device** (`WRND32$`), so the stock ArcaOS **Wireless LAN Monitor** (XWLAN) and `wpa_supplicant`
   manage it like any other WiFi adapter, and
@@ -39,13 +42,15 @@ They are built with **open-source tools only** (Open Watcom + NASM) and link no 
 `C:\IBMCOM\MACS`; add `DEVICE=C:\IBMCOM\MACS\RTL8821AU.OS2` to `CONFIG.SYS`; bind the adapter in `PROTOCOL.INI` as in
 `PROTOCOL.INI.example`; put the firmware load line from `STARTUP.CMD.example` into `C:\STARTUP.CMD`
 (`copy /b C:\IBMCOM\MACS\RTL8821AU.FW \DEV\WRND32$`, once per boot); reboot, plug the dongle in and use the Wireless LAN
-Monitor. *RTL8188EU:* the same with `RTL88EU.OS2` and no firmware step. **Only one of the two drivers can be loaded at a
-time** (both use the device name `WRND32$`): keep one `DEVICE=` line active. Full steps are in the folder READMEs and in
+Monitor. *RTL8188EU:* the same with `RTL88EU.OS2` and no firmware step. *RTL8821AE (PCIe):* see
+[rtl8821ae/README.md](rtl8821ae/README.md). **Only one of the drivers can be loaded at a time** (all use the device name
+`WRND32$`): keep one `DEVICE=` line active. Full steps are in the folder READMEs and in
 [docs/](docs/).
 
 ## Building
 
-Open Watcom 2.0 (16-bit `wcc`, `wlink`) and NASM on OS/2; each driver has its own `build.cmd`. See [BUILD.md](BUILD.md).
+Open Watcom 2.0 (16-bit `wcc`, `wlink`) and NASM on OS/2; each driver has its own `build.cmd`. The RTL8821AE driver also
+cross-builds on Linux (`make -C rtl8821ae/src`). See [BUILD.md](BUILD.md).
 
 ## Repository layout
 
@@ -54,6 +59,7 @@ README.md  CHANGELOG.md  BUILD.md  PROVENANCE.md  SECURITY.md  COPYING
 docs/        ARCHITECTURE.md  HARDWARE.md  TESTING.md  (and the 0.1.2 audit documents)
 rtl8188eu/   src/  install/  bin/        RTL88EU.OS2 (0.1.2 driver + SMP fixes)
 rtl8821au/   src/  install/  bin/        RTL8821AU.OS2 + RTL8821AU.FW
+rtl8821ae/   src/{os2,wlan,rtw}  install/  bin/  docs/  tests/   RTL8821AE.OS2 + RTL8821AE.FW (PCIe)
 tools/       gen_tbl.py                  generator of the RTL8821A register tables
 ```
 

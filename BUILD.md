@@ -8,12 +8,26 @@ Each driver has its own `src` folder with its own `build.cmd` and `rtl88eu.lnk`:
 * `rtl8821au\src` builds `RTL8821AU.OS2`
 * `rtl8188eu\src` builds `RTL88EU.OS2` (use `build_vm.cmd` to compile every file in one go; `build.cmd file ...`
   recompiles only the named files and then links)
+* `rtl8821ae\src` builds `RTL8821AE.OS2` (its own `build.cmd` and `rtl8821ae.lnk`; sources in `os2\`, `wlan\`, `rtw\`)
 
 ## With wmake (contributed by Andy Willis)
 
 In `rtl8188eu\src` run `wmake -f rtl88eu.mak`, in `rtl8821au\src` run `wmake -f rtl8821au.mak` (`wmake -a -f ...` rebuilds
 everything, `wmake -f ... clean` removes the objects). Open Watcom and NASM must be on the `PATH`; the makefiles set `WATCOM`
 and `INCLUDE` themselves. They use the same flags and link file as `build.cmd` and give the same binary.
+
+## RTL8821AE on Linux (cross build)
+
+```sh
+export WATCOM=/path/to/open-watcom-2
+export PATH=$WATCOM/binl64:$WATCOM/binl:$PATH
+export INCLUDE=
+make -C rtl8821ae/src
+```
+
+The current Open Watcom v2 snapshot (`ow-snapshot.tar.xz` from the project's GitHub releases) and NASM work. The
+compiler flags are those below plus `-i=os2 -i=wlan -i=rtw`; the result is `rtl8821ae/src/RTL8821AE.OS2` and its map.
+Treat every "W112 Pointer truncated" warning as a bug (the address of a stack variable passed on: SS is not DS).
 
 ## Steps with the batch files
 

@@ -48,6 +48,17 @@ Everything else in `rtl8821au\src` that is not listed (`rt_hdr.asm`, `rt_end.asm
 `rtl_dhcp.c`, `rtl_dbg.c`, `rt_ndis.h`) is the 0.1.2 platform code (**SPEC / ORIG**, see the 0.1.2 register).
 `rtl8188eu\src` is the 0.1.2 source plus the SMP changes; its chip layer is **LIN** from the Linux `rtl8188eu` driver.
 
+## What the RTL8821AE driver adds (`rtl8821ae/`, not yet released)
+
+| File(s) | Class | Evidence |
+|---|---|---|
+| `rtl8821ae/src/os2/*`, `rtl8821ae/src/wlan/*`, `rtl8821ae/tests/*`, `install/RTWMAC.CMD` | **outside GPL-2.0-only code** | copied from the iwlwifi OS/2 driver ([psmedley/iwlwifi](https://github.com/psmedley/iwlwifi), GPL-2.0-only; its PROVENANCE.md: the OS/2 plumbing derives from this project's RTL88EU driver via the QCA6174 driver, the station from the QCA6174 driver). Changed here: names and texts (`drv.h`, `genmac.c`, `ndis.c`, `strat.c`), the BAR selection and 8/16-bit MMIO (`pci.c`, `lib.asm`, `os2dd.h`), the `hw_cmd` debug hook (`dbg.c`, `hw.h`) |
+| `rtl8821ae/src/rtw/rtw_io.c`, `rtw_phy.c`, `rtw_sta.c` | **LIN (via rtl8821au)** | ported from this project's `rtl8821au/src` (`rtl8821_phy.c`, `rtl8821_efuse.c`, `rtl_rx.c`), which derive from the Realtek vendor driver `morrownr/8821au-20210708` (GPL-2.0); PCIe changes checked against Linux rtlwifi `rtl8821ae` |
+| `rtl8821ae/src/rtw/rtw_hal.c`, `rtw_trx.c`, `rtw.h` | **LIN** | power sequences, MAC set-up, ring protocol, descriptor layout, register values from Linux rtlwifi (`drivers/net/wireless/realtek/rtlwifi/pci.c`, `rtl8821ae/hw.c`, `fw.c`, `trx.c`, `trx.h`, `reg.h`, `def.h`, `pwrseq.h`; Copyright (c) 2009-2010 Realtek Corporation, GPL-2.0), LLT and firmware download from `rtl8821au/src/rtl8821_hal.c`. Headers name the Linux files |
+| `rtl8821ae/src/rtw/rtw_tbl.c` | **LIN (generated)** | `tools/gen_tbl.py <ref> <out> pcie` from the same vendor tables as `rtl8821_tbl.c`, evaluated for a PCIe interface |
+| `rtl8821ae/bin/RTL8821AE.FW` | **BIN** | Realtek firmware `rtlwifi/rtl8821aefw_29.bin` from linux-firmware (28,348 bytes, sha256 `11e7ea00504fa2fa6f5216bb59403c4f2f20eec5b676c0add0695db3b0c4a335`), "Redistributable" under `LICENCE.rtlwifi_firmware.txt` (WHENCE), shipped next to it as `bin/LICENCE.rtlwifi_firmware.txt` |
+| `tools/gen_tbl.py` (command-line arguments, `pcie`) | **ORIG** | the generator; without arguments it writes the USB tables as before (byte-identical `rtl8821_tbl.c`) |
+
 ## Not linked
 
 No IBM library or header; the only run-time imports are `DosOpen`, `DosClose`, `DosRead`, `DosDevIOCtl` from

@@ -1,0 +1,10 @@
+@echo off
+rem STARTUP.CMD lines for the RTL8821AE OS/2 driver (Realtek RTL8821AE PCIe WiFi).
+rem The driver cannot read files during boot, so the firmware (RTL8821AE.FW = linux-firmware
+rem rtlwifi/rtl8821aefw_29.bin, 28 KB) is copied into it once per boot.
+copy /b C:\IBMCOM\MACS\RTL8821AE.FW \DEV\WRND32$ > nul
+rem The adapter starts as soon as the file is in (power-on, firmware, radio tables: about a second), so the driver
+rem knows its real MAC before the protocol stack binds. Keep this line BEFORE anything that runs NETBIND / LAN start,
+rem and before the Wireless LAN Monitor.
+rem To retry a failed start:      echo up > \DEV\WRND32$
+rem The state at any time:        copy \DEV\WRND32$ con
